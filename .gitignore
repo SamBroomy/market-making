@@ -1,0 +1,15 @@
+# Ignore all files
+*
+
+!*/
+# Allow .gitignore itself
+!.gitignore
+!Cargo.toml
+!src/
+!**/*.rs
+!examples/
+!benches/
+!notebooks/*.ipynb
+
+debug/
+target/
