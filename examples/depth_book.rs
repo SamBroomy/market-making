@@ -1,13 +1,12 @@
-use env_logger::Builder;
 use futures_util::StreamExt;
-use log::{debug, info, warn};
 use rust_decimal::Decimal;
-use serde::{de, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de};
 use std::{
     collections::{BTreeMap, VecDeque},
     str::FromStr,
     time::Duration,
 };
+use tracing::{debug, info, warn};
 
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
@@ -564,9 +563,8 @@ impl OrderBookState {
 }
 #[tokio::main]
 async fn main() -> Result<()> {
-    Builder::from_default_env()
-        .filter(None, log::LevelFilter::Debug)
-        .init();
+    tracing_subscriber::fmt::fmt().init();
+
     let (depth_book, coordinator) = DepthBook::new("btcusdt".to_string());
 
     // Start the depth book

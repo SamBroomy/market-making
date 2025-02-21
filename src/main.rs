@@ -6,15 +6,15 @@ use binance_spot_connector_rust::{
     tokio_tungstenite::BinanceWebSocketClient,
 };
 use futures_util::StreamExt;
-use rust_decimal::{prelude::FromPrimitive, Decimal};
+use rust_decimal::{Decimal, prelude::FromPrimitive};
 use std::{collections::VecDeque, time::Duration};
 use tokio::select;
-use tracing::{debug, info, warn};
+use tracing::{error, info, warn};
 
 use marketmakerlib::{
     binance::{
-        data::{BinanceEvent, DepthSnapshot},
         BinanceMessage, VolumeProfile,
+        data::{BinanceEvent, DepthSnapshot},
     },
     order_book_state::OrderBookState,
     recent_trades::RecentTrades,
@@ -72,11 +72,9 @@ async fn main() -> Result<()> {
 
                 let pending = 1; //conn.as_mut().count().await;
 
-                log::info!(
+                info!(
                     "Throughput: {:.2} msgs/sec, Total: {}, Pending: {}",
-                    messages_per_second,
-                    total_messages,
-                    pending
+                    messages_per_second, total_messages, pending
                 );
 
                 // Reset counters
@@ -89,7 +87,7 @@ async fn main() -> Result<()> {
                 Err(_) => break,
             }
             if timer.elapsed() >= duration {
-                log::info!("10 seconds elapsed, exiting loop.");
+                info!("10 seconds elapsed, exiting loop.");
                 break; // Exit the loop after 10 seconds
             }
         }
@@ -117,8 +115,8 @@ async fn main() -> Result<()> {
                 },
                 Err(e) => {
                     if let Some(e) = e {
-                        log::error!("Failed to parse event: {}", e);
-                        log::error!(
+                        error!("Failed to parse event: {}", e);
+                        error!(
                             "Data: {:?}",
                             serde_json::from_str::<serde_json::Value>(&binary_data)
                         );
@@ -130,7 +128,7 @@ async fn main() -> Result<()> {
     });
 
     tokio::time::sleep(Duration::from_secs(3)).await;
-    let mut vp = VolumeProfile::new(20.into());
+    let vp = VolumeProfile::new(20.into());
     let mut rt = RecentTrades::new(50);
     let data = client
         .send(market::depth(symbol).limit(5_000))
@@ -216,7 +214,7 @@ async fn main() -> Result<()> {
         last_stink = stink_bid;
 
         if timer.elapsed() >= duration {
-            log::info!("10 seconds elapsed, exiting loop.");
+            info!("10 seconds elapsed, exiting loop.");
             break; // Exit the loop after 10 seconds
         }
     }
@@ -228,12 +226,12 @@ async fn main() -> Result<()> {
     // At the end, show final statistics
     let total_time = start_time.elapsed();
     let average_throughput = total_messages as f64 / total_time.as_secs_f64();
-    log::info!(
+    info!(
         "Final stats - Total messages: {}, Average throughput: {:.2} msgs/sec, Total time: {:.2}s",
         total_messages,
         average_throughput,
         total_time.as_secs_f64()
     );
-    log::info!("Volume profile: {:?}", vp);
+    info!("Volume profile: {:?}", vp);
     Ok(())
 }

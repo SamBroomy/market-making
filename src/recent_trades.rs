@@ -2,7 +2,6 @@ use std::collections::VecDeque;
 
 use chrono::{DateTime, Utc};
 use rust_decimal::{Decimal, MathematicalOps};
-use serde_json::map::Iter;
 
 use crate::binance::data::{AggregateTrade, TradeEventData};
 

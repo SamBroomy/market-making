@@ -1,6 +1,5 @@
 use binance_spot_connector_rust::{hyper::BinanceHttpClient, market};
-use marketmakerlib::binance::DepthSnapshot;
-use tracing::info;
+use marketmakerlib::binance::data::DepthSnapshot;
 
 #[tokio::main]
 async fn main() {

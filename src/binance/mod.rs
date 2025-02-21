@@ -6,6 +6,7 @@ use serde::Deserialize;
 pub mod data;
 
 use rust_decimal::Decimal;
+use tracing::debug;
 
 #[derive(Debug, Default)]
 pub struct VolumeProfile {
@@ -118,10 +119,10 @@ impl BinanceMessage {
             BinanceMessage::Protocol(msg) => {
                 match msg {
                     ProtocolMessage::Heartbeat(timestamp) => {
-                        log::debug!("Received heartbeat at {}", timestamp);
+                        debug!("Received heartbeat at {}", timestamp);
                     }
                     ProtocolMessage::Response { result, id } => {
-                        log::debug!("Received response message: id={}, result={:?}", id, result);
+                        debug!("Received response message: id={}, result={:?}", id, result);
                     }
                 }
                 Err(None)
