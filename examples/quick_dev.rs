@@ -7,14 +7,24 @@ async fn main() {
     let client = BinanceHttpClient::default();
 
     let data = client
-        .send(market::depth(symbol).limit(5_000))
+        .send(market::exchange_info().symbol("BTCUSDT"))
         .await
-        .expect("Failed to get depth")
+        .expect("Failed to get exchange info")
         .into_body_str()
         .await
         .expect("Failed to read response body");
 
-    let snapshot =
-        serde_json::from_str::<DepthSnapshot>(&data).expect("Failed to parse depth snapshot");
-    println!("Snapshot: {:?}", snapshot);
+    println!("Data: {}", data);
+
+    // let data = client
+    //     .send(market::depth(symbol).limit(5_000))
+    //     .await
+    //     .expect("Failed to get depth")
+    //     .into_body_str()
+    //     .await
+    //     .expect("Failed to read response body");
+
+    // let snapshot =
+    //     serde_json::from_str::<DepthSnapshot>(&data).expect("Failed to parse depth snapshot");
+    // println!("Snapshot: {:?}", snapshot);
 }

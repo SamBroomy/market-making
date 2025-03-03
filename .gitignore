@@ -10,6 +10,7 @@
 !examples/
 !benches/
 !notebooks/*.ipynb
-
+!**/*.ipynb
+!LICENSE
 debug/
 target/

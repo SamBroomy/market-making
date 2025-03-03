@@ -1,21 +1,27 @@
 use anyhow::Result;
 use binance_spot_connector_rust::{
     hyper::BinanceHttpClient,
-    market,
-    market_stream::{agg_trade::AggTradeStream, diff_depth::DiffDepthStream},
+    market::{self, klines::KlineInterval},
+    market_stream::{
+        agg_trade::AggTradeStream, avg_price::AvgPriceStream, book_ticker::BookTickerStream,
+        diff_depth::DiffDepthStream, kline::KlineStream, mini_ticker::MiniTickerStream,
+        rolling_window_ticker::RollingWindowTickerStream, ticker::TickerStream, trade::TradeStream,
+    },
     tokio_tungstenite::BinanceWebSocketClient,
 };
 use futures_util::StreamExt;
 use rust_decimal::{Decimal, prelude::FromPrimitive};
 use std::{collections::VecDeque, time::Duration};
 use tokio::select;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
+use tracing_subscriber::layer::SubscriberExt;
 
 use marketmakerlib::{
     binance::{
         BinanceMessage, VolumeProfile,
-        data::{BinanceEvent, DepthSnapshot},
+        data::{AveragePrice, BinanceEvent, DepthSnapshot},
     },
+    market_maker::{MarketMaker, MarketMakerConfig},
     order_book_state::OrderBookState,
     recent_trades::RecentTrades,
 };
@@ -35,25 +41,43 @@ async fn main() -> Result<()> {
 
     let symbol = "BTCUSDT";
 
-    let (message_tx, mut message_rx) = tokio::sync::mpsc::channel(1000);
+    let (message_tx, mut message_rx) = tokio::sync::mpsc::channel(10_000);
 
-    let (depth_tx, mut depth_rx) = tokio::sync::mpsc::channel(200);
-    let (agg_tx, mut agg_rx) = tokio::sync::mpsc::channel(200);
+    let (depth_tx, mut depth_rx) = tokio::sync::mpsc::channel(2_000);
+    let (agg_tx, mut agg_rx) = tokio::sync::mpsc::channel(2_000);
+    let (book_ticker_tx, mut book_ticker_rx) = tokio::sync::mpsc::channel(5_000);
+    let (mini_ticker_tx, mut mini_ticker_rx) = tokio::sync::mpsc::channel(500);
+    let (ticker_tx, mut ticker_rx) = tokio::sync::mpsc::channel(500);
+    let (avg_price_tx, mut avg_price_rx) = tokio::sync::mpsc::channel(500);
+    let (kline_tx, mut kline_rx) = tokio::sync::mpsc::channel(500);
+    let (trade_tx, mut trade_rx) = tokio::sync::mpsc::channel(500);
+    let (window_ticker_tx, mut window_ticker_rx) = tokio::sync::mpsc::channel(500);
 
     // Subscribe to streams
     conn.subscribe(vec![
-        //&AvgPriceStream::new(symbol).into(),
-        //&TradeStream::new(symbol).into(),
-        //&KlineStream::new(symbol, KlineInterval::Minutes1).into(),
         &DiffDepthStream::from_100ms(symbol).into(),
         &AggTradeStream::new(symbol).into(),
-        //&BookTickerStream::from_symbol(symbol).into(),
+        &BookTickerStream::from_symbol(symbol).into(),
+        &MiniTickerStream::from_symbol(symbol).into(),
+        &TickerStream::from_symbol(symbol).into(),
+        &AvgPriceStream::new(symbol).into(),
+        &KlineStream::new(symbol, KlineInterval::Minutes3).into(),
+        //&TradeStream::new(symbol).into(),
+        &RollingWindowTickerStream::from_symbol("1h", symbol).into(),
     ])
     .await;
+    //     //&AvgPriceStream::new(symbol).into(),
+    //     //&TradeStream::new(symbol).into(),
+    //     //&KlineStream::new(symbol, KlineInterval::Minutes1).into(),
+    //     &DiffDepthStream::from_100ms(symbol).into(),
+    //     &AggTradeStream::new(symbol).into(),
+    //     //&BookTickerStream::from_symbol(symbol).into(),
+    // ])
+    // .await;
 
     // Start a timer for 10 seconds
     let timer = tokio::time::Instant::now();
-    let duration = Duration::new(200, 0);
+    let duration = Duration::new(500, 0);
     // Initialize counters and timing
     let start_time = tokio::time::Instant::now();
     let mut last_check = start_time;
@@ -63,25 +87,6 @@ async fn main() -> Result<()> {
 
     let stream_handler = tokio::spawn(async move {
         while let Some(message) = conn.as_mut().next().await {
-            total_messages += 1;
-            messages_since_last_check += 1;
-            // Check throughput every second
-            if last_check.elapsed() >= check_interval {
-                let messages_per_second =
-                    messages_since_last_check as f64 / last_check.elapsed().as_secs_f64();
-
-                let pending = 1; //conn.as_mut().count().await;
-
-                info!(
-                    "Throughput: {:.2} msgs/sec, Total: {}, Pending: {}",
-                    messages_per_second, total_messages, pending
-                );
-
-                // Reset counters
-                messages_since_last_check = 0;
-                last_check = tokio::time::Instant::now();
-            }
-
             match message {
                 Ok(message) => message_tx.send(message).await?,
                 Err(_) => break,
@@ -98,19 +103,67 @@ async fn main() -> Result<()> {
 
     let sender = tokio::spawn(async move {
         while let Some(message) = message_rx.recv().await {
+            total_messages += 1;
+            messages_since_last_check += 1;
+            // Check throughput every second
+            if last_check.elapsed() >= check_interval {
+                let pending = message_rx.len();
+                let messages_per_second =
+                    messages_since_last_check as f64 / last_check.elapsed().as_secs_f64();
+
+                info!(
+                    "Throughput: {:.2} msgs/sec, Total: {}, Pending: {}",
+                    messages_per_second, total_messages, pending
+                );
+                if pending >= 100 {
+                    warn!("Back-logged")
+                }
+
+                messages_since_last_check = 0;
+                last_check = tokio::time::Instant::now();
+            }
+
             let binary_data = message.into_text()?;
             match BinanceMessage::from_str_into_market_data(&binary_data) {
                 Ok(event) => match event {
                     BinanceEvent::AggTrade(trade) => {
-                        info!("AggTrade");
                         agg_tx.send(trade).await.expect("Failed to send trade");
                     }
                     BinanceEvent::DepthUpdate(depth) => {
-                        info!("Depth update");
                         depth_tx.send(depth).await.expect("Failed to send depth");
                     }
-                    _ => {
-                        warn!("Unknown event: {:?}", event);
+                    BinanceEvent::BookTicker(ticker) => {
+                        book_ticker_tx
+                            .send(ticker)
+                            .await
+                            .expect("Failed to send book ticker");
+                    }
+                    BinanceEvent::MiniTicker(ticker) => {
+                        mini_ticker_tx
+                            .send(ticker)
+                            .await
+                            .expect("Failed to send mini ticker");
+                    }
+                    BinanceEvent::Ticker(ticker) => {
+                        ticker_tx.send(ticker).await.expect("Failed to send ticker");
+                    }
+                    BinanceEvent::AvgPrice(avg_price) => {
+                        avg_price_tx
+                            .send(avg_price)
+                            .await
+                            .expect("Failed to send avg price");
+                    }
+                    BinanceEvent::Kline(kline) => {
+                        kline_tx.send(kline).await.expect("Failed to send kline");
+                    }
+                    BinanceEvent::Trade(trade) => {
+                        trade_tx.send(trade).await.expect("Failed to send trade");
+                    }
+                    BinanceEvent::WindowTicker(ticker) => {
+                        window_ticker_tx
+                            .send(ticker)
+                            .await
+                            .expect("Failed to send window ticker");
                     }
                 },
                 Err(e) => {
@@ -127,9 +180,10 @@ async fn main() -> Result<()> {
         Ok::<_, anyhow::Error>(())
     });
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
-    let vp = VolumeProfile::new(20.into());
-    let mut rt = RecentTrades::new(50);
+    warn!("Sleeping for 5 seconds to allow for snapshot processing...");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    warn!("Waking up...");
+    let mut rt = RecentTrades::new(100);
     let data = client
         .send(market::depth(symbol).limit(5_000))
         .await
@@ -150,80 +204,79 @@ async fn main() -> Result<()> {
     order_book_state.process_buffer(buffer)?;
     // Start normal processing
     info!("Starting normal update processing...");
-
-    let mut k = Decimal::ZERO;
-    let base_k = Decimal::ONE;
-    let mut mid = Decimal::ZERO;
-    let mut last_stink = Decimal::MIN;
-    let mut spread = Decimal::ZERO;
-    let mut imbalance = Decimal::ZERO;
-    let mut sigma = Decimal::ZERO;
-    let mut best_bid = Decimal::MIN;
-
     let mut buffer = Vec::new();
     agg_rx.recv_many(&mut buffer, usize::MAX).await;
     rt.update_many(buffer.into_iter());
-
+    let mut market_maker = MarketMaker::new(MarketMakerConfig::default(), order_book_state, rt);
+    let mut i = 0;
     loop {
+        i += 1;
         select! {
             Some(depth) = depth_rx.recv() => {
-                order_book_state.process_update(depth)?;
-                let s = order_book_state.spread().unwrap();
-                info!("Updated spread: {} -> {}  diff {}", spread, s, spread - s);
-                spread = s;
-                let i = order_book_state.imbalance().unwrap();
-                info!("Updated imbalance: {} -> {}", imbalance, i);
-                imbalance = i;
-                k = if imbalance < Decimal::from_f32(-0.3).unwrap() {
-                    base_k + Decimal::ONE
-                } else {
-                    base_k
-                };
-                let m = order_book_state.mid_price().unwrap();
-                info!("Updated mid-price: {} -> {}", mid, m);
-                mid = m;
-                let ba = order_book_state.best_bid().unwrap();
-                info!("New best Bid: {} -> {}", best_bid, ba);
-                best_bid = ba;
-
+                info!("Depth Update");
+                market_maker.handle_depth_update(depth)?;
             }
             Some(trade) = agg_rx.recv() => {
-                if trade.buyer_market_maker && (trade.price <= last_stink)  {
-                    warn!("Stink Bid HIT! Bid: {} - Trade: {}", last_stink, trade.price);
-                }
-                rt.update(trade);
-                let s = rt.calculate_volitility().unwrap();
-                info!("Updated sigma: {} -> {}", sigma, s);
-                if s > (sigma * Decimal::from_f32(1.2).unwrap()) {
-                    info!("Vol increased, should potentially move bids");
-                }
-                sigma = s;
-                if spread > sigma {
-                    info!("Wide enough for profit");
-                    continue;
-                }
+                info!("AggTrade");
+                market_maker.handle_trade(trade)?;
+            }
+            Some(book_ticker) = book_ticker_rx.recv() => {
+                info!("BookTicker: {:?}", book_ticker);
 
+            }
+            Some(mini_ticker) = mini_ticker_rx.recv() => {
+                info!("Mini Ticker");
+
+                debug!("MiniTicker: {:?}", mini_ticker);
+
+            }
+            Some(ticker) = ticker_rx.recv() => {
+                info!("Ticker");
+                debug!("Ticker: {:?}", ticker);
+            }
+            Some(avg_price) = avg_price_rx.recv() => {
+                info!("AvgPrice");
+                debug!("AvgPrice: {:?}", avg_price);
+
+            }
+            Some(kline) = kline_rx.recv() => {
+                info!("Kline");
+                debug!("Kline: {:?}", kline);
+            }
+            Some(trade) = trade_rx.recv() => {
+                info!("Trade");
+                debug!("Trade: {:?}", trade);
+            }
+            Some(window_ticker) = window_ticker_rx.recv() => {
+                info!("WindowTicker");
+                debug!("WindowTicker: {:?}", window_ticker);
             }
             else => {
                 break;
             }
+
+
         }
 
-        let stink_bid = mid - (k * sigma);
-        info!("New Stink bid: {}", stink_bid);
-        last_stink = stink_bid;
+        if i % 100 == 0 {
+            info!("Statistics: {}", market_maker.get_statistics());
+            i = 0;
+        }
 
         if timer.elapsed() >= duration {
             info!("10 seconds elapsed, exiting loop.");
             break; // Exit the loop after 10 seconds
         }
     }
+
     drop(depth_rx);
     drop(agg_rx);
+
     let (_, _) = tokio::join!(stream_handler, sender);
     info!("Exiting main loop");
 
-    // At the end, show final statistics
+    info!("{:?}", market_maker);
+
     let total_time = start_time.elapsed();
     let average_throughput = total_messages as f64 / total_time.as_secs_f64();
     info!(
@@ -232,6 +285,5 @@ async fn main() -> Result<()> {
         average_throughput,
         total_time.as_secs_f64()
     );
-    info!("Volume profile: {:?}", vp);
     Ok(())
 }

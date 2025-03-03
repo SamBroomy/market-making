@@ -10,10 +10,17 @@ type Size = Decimal;
 
 #[derive(Debug, Clone, Default)]
 pub struct OrderBookState {
-    bids: BTreeMap<Price, Size>,
-    asks: BTreeMap<Price, Size>,
+    pub bids: BTreeMap<Price, Size>,
+    pub asks: BTreeMap<Price, Size>,
     last_update_id: u64,
     last_update_time: DateTime<Utc>,
+    pub spread: Option<Decimal>,
+    pub relative_spread: Option<Decimal>,
+    pub mid_price: Option<Decimal>,
+    pub imbalance: Option<Decimal>,
+    pub weighted_imbalance: Option<Decimal>,
+    pub best_bid: Option<(Price, Size)>,
+    pub best_ask: Option<(Price, Size)>,
 }
 
 impl OrderBookState {
@@ -154,19 +161,36 @@ impl OrderBookState {
             }
         }
 
-        debug!(
+        info!(
             "Update applied successfully, new last_update_id: {}",
             update.final_update_id
         );
         self.last_update_id = update.final_update_id;
         self.last_update_time = update.event_time;
+        self.spread = self.spread();
+        self.relative_spread = self.relative_spread();
+        self.mid_price = self.mid_price();
+        self.imbalance = self.imbalance();
+
+        self.best_bid = self.bids.last_key_value().map(|(&k, &v)| (k, v));
+        self.best_ask = self.asks.first_key_value().map(|(&k, &v)| (k, v));
+
         Ok(())
     }
 
-    pub fn spread(&self) -> Option<Decimal> {
+    fn spread(&self) -> Option<Decimal> {
         let top_bid = self.bids.last_key_value()?.0;
         let top_ask = self.asks.first_key_value()?.0;
+
         Some(top_ask - top_bid)
+    }
+
+    fn relative_spread(&self) -> Option<Decimal> {
+        let top_bid = self.bids.last_key_value()?.0;
+        let top_ask = self.asks.first_key_value()?.0;
+        let mid_price = (top_bid + top_ask) / Decimal::from(2);
+
+        Some((top_ask - top_bid) / mid_price)
     }
 
     pub fn mid_price(&self) -> Option<Decimal> {
@@ -193,11 +217,103 @@ impl OrderBookState {
 
         Some((bids - asks) / (bids + asks))
     }
+    /// Calculates the weighted relative imbalance over the top `depth` levels of the order book.
+    ///
+    /// Both buy and sell volumes are weighted so that orders nearer the top have a larger impact.
+    ///
+    /// Returns a value in the range [-1, 1]. Positive values indicate a buy imbalance,
+    /// while negative values indicate a sell imbalance.
+    pub fn weighted_relative_imbalance(&self, depth: impl Into<usize>) -> Option<Decimal> {
+        let depth: usize = depth.into();
+        if depth == 0 {
+            return None;
+        }
 
-    pub fn best_bid(&self) -> Option<Decimal> {
+        let mut weighted_bid = Decimal::ZERO;
+        let mut weighted_ask = Decimal::ZERO;
+
+        // For bids, iterate from best (last) to deeper levels.
+        for (i, volume) in self.bids.values().rev().take(depth).enumerate() {
+            // Example weighting: orders closer to the top (i==0) get weight 1,
+            // then weight decays as 1/(i+1)
+            let weight = Decimal::ONE / Decimal::from((i as u32) + 1);
+            weighted_bid += volume * weight;
+        }
+
+        // For asks, iterate from best (first) to deeper levels.
+        for (i, volume) in self.asks.values().take(depth).enumerate() {
+            let weight = Decimal::ONE / Decimal::from((i as u32) + 1);
+            weighted_ask += volume * weight;
+        }
+
+        let total = weighted_bid + weighted_ask;
+        if total == Decimal::ZERO {
+            None
+        } else {
+            Some((weighted_bid - weighted_ask) / total)
+        }
+    }
+
+    pub fn relative_book_imbalance(&self, depth: impl Into<usize>) -> Option<Decimal> {
+        let depth = depth.into();
+        let best_bid = self.best_bid()?;
+        let worst_bid = self.bids.iter().rev().nth(depth - 1).map(|(&k, _)| k)?;
+        let best_ask = self.best_ask()?;
+        let worst_ask = self.asks.iter().nth(depth - 1).map(|(&k, _)| k)?;
+        let (bid_vwap, ask_vwap) = self.relative_imbalance_vwap(depth)?;
+
+        let bid_weighted = (best_bid - bid_vwap) / (best_bid - worst_bid);
+        let ask_weighted = (best_ask - ask_vwap) / (best_ask - worst_ask);
+
+        Some((bid_weighted - ask_weighted) * Decimal::ONE_HUNDRED)
+    }
+
+    /// Calculates the relative imbalance of the mid price over the top `depth` levels of the order book.
+    ///
+    /// Both buy and sell volumes are weighted so that orders nearer the top have a larger impact.
+    pub fn relative_mid_price_imbalance(&self, depth: impl Into<usize>) -> Option<Decimal> {
+        let depth = depth.into();
+        let mid_price = self.mid_price()?;
+        let (bid_imbalance, ask_imbalance) = self.relative_imbalance_vwap(depth)?;
+
+        let bid_weighted = (mid_price - bid_imbalance) / (mid_price);
+        let ask_weighted = (mid_price - ask_imbalance) / (mid_price);
+
+        Some((bid_weighted - ask_weighted) * Decimal::ONE_HUNDRED)
+    }
+
+    fn relative_imbalance_vwap(&self, depth: usize) -> Option<(Decimal, Decimal)> {
+        if depth > self.bids.len().min(self.asks.len()) {
+            info!("Relative imbalance depth is less than the order book depth");
+            return None;
+        }
+        let bids_iter = self.bids.iter().rev().take(depth);
+        let bid_vwap = bids_iter
+            .clone()
+            .map(|(&price, &size)| price * size)
+            .sum::<Decimal>()
+            / bids_iter.map(|(_, &size)| size).sum::<Decimal>();
+
+        let asks_iter = self.asks.iter().take(depth);
+        let ask_vwap = asks_iter
+            .clone()
+            .map(|(&price, &size)| price * size)
+            .sum::<Decimal>()
+            / asks_iter.map(|(_, &size)| size).sum::<Decimal>();
+
+        Some((bid_vwap, ask_vwap))
+    }
+
+    fn best_bid(&self) -> Option<Decimal> {
         self.bids.last_key_value().map(|(&k, _)| k)
     }
-    pub fn best_ask(&self) -> Option<Decimal> {
+    fn best_ask(&self) -> Option<Decimal> {
         self.asks.first_key_value().map(|(&k, _)| k)
+    }
+    fn best_bid_size(&self) -> Option<Decimal> {
+        self.bids.last_key_value().map(|(_, &v)| v)
+    }
+    fn best_ask_size(&self) -> Option<Decimal> {
+        self.asks.first_key_value().map(|(_, &v)| v)
     }
 }
