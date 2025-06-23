@@ -1,4 +1,4 @@
-use chrono::{serde::ts_milliseconds, DateTime, Utc};
+use chrono::{DateTime, Utc, serde::ts_milliseconds};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 

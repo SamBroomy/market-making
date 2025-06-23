@@ -1,8 +1,8 @@
 use rust_decimal::Decimal;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Latest book data for a symbol
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct BookTickerEvent {
     #[serde(rename = "u")]
     pub update_id: u64,
@@ -19,7 +19,7 @@ pub struct BookTickerEvent {
 }
 
 /// Mini Ticker for 24hr stats
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct MiniTickerData {
     #[serde(rename = "E")]
     pub event_time: u64,
@@ -40,7 +40,7 @@ pub struct MiniTickerData {
 }
 
 /// Full Ticker (24hr stats with more details)
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TickerData {
     #[serde(rename = "E")]
     pub event_time: u64,
@@ -89,7 +89,7 @@ pub struct TickerData {
 }
 
 /// Rolling Window Statistics (1h, 4h, 1d)
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct WindowTickerData {
     #[serde(rename = "e")]
     pub event_type: String, // "1hTicker", "4hTicker", etc.

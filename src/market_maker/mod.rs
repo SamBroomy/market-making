@@ -2,12 +2,12 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::{
-    binance::data::{AggregateTrade, DepthUpdate},
+    binance::data::{DepthUpdate, OfferData},
     order_book_state::OrderBookState,
-    recent_trades::{self, RecentTrades, Trade},
+    recent_trades::{RecentTrades, Trade},
 };
 
 /// Configuration parameters for the simplified market maker
@@ -142,7 +142,7 @@ impl MarketMaker {
     /// Updates order book state with a new depth update
     pub fn handle_depth_update(&mut self, update: DepthUpdate) -> Result<()> {
         // Process the update to our order book
-        self.order_book.process_update(update)?;
+        self.order_book.process_update(&update)?;
 
         // Update tracking values
         if let Some(imbalance) = self.order_book.imbalance {
@@ -228,7 +228,10 @@ impl MarketMaker {
         let mut orders_to_cancel = Vec::new();
         let mut should_adjust_k_factor = false;
 
-        if let Some((best_bid, _)) = self.order_book.best_bid {
+        if let Some(OfferData {
+            price: best_bid, ..
+        }) = self.order_book.best_bid
+        {
             // Review each active order
             for (idx, order) in self.active_orders.iter().enumerate() {
                 let distance_to_best = best_bid - order.price;
@@ -282,7 +285,16 @@ impl MarketMaker {
         }
 
         // Check if we have all the necessary data
-        if let (Some(mid_price), volatility, Some((best_bid, _)), Some((best_ask, _))) = (
+        if let (
+            Some(mid_price),
+            volatility,
+            Some(OfferData {
+                price: best_bid, ..
+            }),
+            Some(OfferData {
+                price: _best_ask, ..
+            }),
+        ) = (
             self.order_book.mid_price,
             self.last_volatility,
             self.order_book.best_bid,

@@ -1,8 +1,8 @@
-use chrono::{serde::ts_milliseconds, DateTime, Utc};
+use chrono::{DateTime, Utc, serde::ts_milliseconds};
 use rust_decimal::Decimal;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 //#[serde(deny_unknown_fields)]
 pub struct TradeEventData {
     // #[serde(rename = "e")]
@@ -22,8 +22,8 @@ pub struct TradeEventData {
     #[serde(rename = "m")]
     pub buyer_market_maker: bool,
 }
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct AggregateTrade {
     #[serde(rename = "E", with = "ts_milliseconds")]
     pub event_time: DateTime<Utc>,
@@ -43,8 +43,6 @@ pub struct AggregateTrade {
     pub trade_time: DateTime<Utc>,
     #[serde(rename = "m")]
     pub buyer_market_maker: bool,
-    #[serde(rename = "M", skip)]
-    _ignore: (),
 }
 
 struct Trade {

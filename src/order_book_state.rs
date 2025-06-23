@@ -1,17 +1,294 @@
 use crate::binance::data::{DepthSnapshot, DepthUpdate, OfferData};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use core::fmt;
+use either::Either;
 use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use std::collections::{BTreeMap, VecDeque};
+use std::marker::PhantomData;
 use tracing::{debug, info, warn};
 
 type Price = Decimal;
 type Size = Decimal;
+type Volume = Decimal;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OrderSide {
+    Bid,
+    Ask,
+}
+impl fmt::Display for OrderSide {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OrderSide::Bid => write!(f, "Bid"),
+            OrderSide::Ask => write!(f, "Ask"),
+        }
+    }
+}
+
+// Marker types to distinguish bid and ask books
+#[derive(Debug, Clone, Default)]
+pub struct BidSide;
+
+#[derive(Debug, Clone, Default)]
+pub struct AskSide;
+
+#[derive(Debug, Clone, Default)]
+pub struct HalfBook<Side: SideOps> {
+    pub price_levels: BTreeMap<Price, Size>,
+    _phantom: PhantomData<Side>,
+}
+
+// Type aliases for convenience
+pub type BidBook = HalfBook<BidSide>;
+pub type AskBook = HalfBook<AskSide>;
+
+pub trait SideOps {
+    fn iter_from_best(
+        map: &'_ BTreeMap<Price, Size>,
+    ) -> Either<
+        std::iter::Rev<std::collections::btree_map::Iter<'_, Price, Size>>,
+        std::collections::btree_map::Iter<'_, Price, Size>,
+    >;
+    fn iter_prices(
+        map: &'_ BTreeMap<Price, Size>,
+    ) -> Either<
+        std::iter::Rev<std::collections::btree_map::Values<'_, Price, Size>>,
+        std::collections::btree_map::Values<'_, Price, Size>,
+    >;
+
+    fn best_price(map: &BTreeMap<Price, Size>) -> Option<Price>;
+    fn best_size(map: &BTreeMap<Price, Size>) -> Option<Size>;
+    fn best_offer(map: &BTreeMap<Price, Size>) -> Option<OfferData>;
+    fn side() -> OrderSide;
+
+    fn volume_weighted_price(map: &BTreeMap<Price, Size>, cutoff: Volume) -> Option<Price> {
+        let mut remaining_cutoff = cutoff;
+        let mut total_notional = Decimal::ZERO;
+        let mut total_size = Decimal::ZERO;
+
+        for (&price, &size) in map.iter() {
+            let v = price * size;
+            if v >= remaining_cutoff {
+                let partial_size = remaining_cutoff / price;
+                total_notional += price * partial_size;
+                total_size += partial_size;
+                break; // Stop once we reach the cutoff
+            } else {
+                total_notional += v;
+                total_size += size;
+                remaining_cutoff -= v;
+            }
+        }
+
+        total_notional
+            .checked_div(total_size)
+            .filter(|&v| !v.is_zero())
+    }
+}
+impl SideOps for BidSide {
+    fn iter_from_best(
+        map: &'_ BTreeMap<Price, Size>,
+    ) -> Either<
+        std::iter::Rev<std::collections::btree_map::Iter<'_, Price, Size>>,
+        std::collections::btree_map::Iter<'_, Price, Size>,
+    > {
+        Either::Left(map.iter().rev())
+    }
+    fn iter_prices(
+        map: &'_ BTreeMap<Price, Size>,
+    ) -> Either<
+        std::iter::Rev<std::collections::btree_map::Values<'_, Price, Size>>,
+        std::collections::btree_map::Values<'_, Price, Size>,
+    > {
+        Either::Left(map.values().rev())
+    }
+    fn best_price(map: &BTreeMap<Price, Size>) -> Option<Price> {
+        map.last_key_value().map(|(&price, _)| price)
+    }
+    fn best_size(map: &BTreeMap<Price, Size>) -> Option<Size> {
+        map.last_key_value().map(|(_, &size)| size)
+    }
+    fn best_offer(map: &BTreeMap<Price, Size>) -> Option<OfferData> {
+        map.last_key_value()
+            .map(|(&price, &size)| OfferData { price, size })
+    }
+    fn side() -> OrderSide {
+        OrderSide::Bid
+    }
+}
+
+impl SideOps for AskSide {
+    fn iter_from_best(
+        map: &'_ BTreeMap<Price, Size>,
+    ) -> Either<
+        std::iter::Rev<std::collections::btree_map::Iter<'_, Price, Size>>,
+        std::collections::btree_map::Iter<'_, Price, Size>,
+    > {
+        Either::Right(map.iter())
+    }
+    fn iter_prices(
+        map: &'_ BTreeMap<Price, Size>,
+    ) -> Either<
+        std::iter::Rev<std::collections::btree_map::Values<'_, Price, Size>>,
+        std::collections::btree_map::Values<'_, Price, Size>,
+    > {
+        Either::Right(map.values())
+    }
+
+    fn best_price(map: &BTreeMap<Price, Size>) -> Option<Price> {
+        map.first_key_value().map(|(&price, _)| price)
+    }
+    fn best_size(map: &BTreeMap<Price, Size>) -> Option<Size> {
+        map.first_key_value().map(|(_, &size)| size)
+    }
+    fn best_offer(map: &BTreeMap<Price, Size>) -> Option<OfferData> {
+        map.first_key_value()
+            .map(|(&price, &size)| OfferData { price, size })
+    }
+    fn side() -> OrderSide {
+        OrderSide::Ask
+    }
+}
+
+impl<S: SideOps> HalfBook<S> {
+    pub fn new() -> Self {
+        Self {
+            price_levels: BTreeMap::new(),
+            _phantom: PhantomData,
+        }
+    }
+    pub fn side_type_name() -> &'static str {
+        std::any::type_name::<S>()
+    }
+
+    pub fn apply_snapshot_offers(&mut self, offers: &[OfferData]) {
+        self.price_levels.clear();
+        for &OfferData { price, size } in offers {
+            if size > Decimal::ZERO {
+                self.price_levels.insert(price, size);
+            }
+        }
+    }
+
+    pub fn apply_change(&mut self, offers: &[OfferData]) {
+        for &OfferData { price, size } in offers {
+            if size > Decimal::ZERO {
+                match self.price_levels.insert(price, size) {
+                    Some(existing_size) => {
+                        if existing_size != size {
+                            debug!(
+                                "Updated {} price: {} from {} to {} diff: {}",
+                                Self::side_type_name(),
+                                price,
+                                existing_size,
+                                size,
+                                existing_size - size
+                            );
+                        } else {
+                            debug!(
+                                "{} price: {} size unchanged: {}",
+                                Self::side_type_name(),
+                                price,
+                                size
+                            );
+                        }
+                    }
+                    None => {
+                        debug!(
+                            "New {} price: {} with size: {}",
+                            Self::side_type_name(),
+                            price,
+                            size
+                        );
+                    }
+                }
+            } else {
+                match self.price_levels.remove(&price) {
+                    Some(existing_size) => {
+                        debug!(
+                            "Removed {} price: {} with size: {}",
+                            Self::side_type_name(),
+                            price,
+                            existing_size
+                        );
+                    }
+                    None => {
+                        debug!(
+                            "Ignoring zero size {} price: {}",
+                            Self::side_type_name(),
+                            price
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn iter(
+        &self,
+    ) -> Either<
+        std::iter::Rev<std::collections::btree_map::Iter<'_, Price, Size>>,
+        std::collections::btree_map::Iter<'_, Price, Size>,
+    > {
+        S::iter_from_best(&self.price_levels)
+    }
+    pub fn iter_prices(
+        &self,
+    ) -> Either<
+        std::iter::Rev<std::collections::btree_map::Values<'_, Price, Size>>,
+        std::collections::btree_map::Values<'_, Price, Size>,
+    > {
+        S::iter_prices(&self.price_levels)
+    }
+
+    pub fn best_price(&self) -> Option<Price> {
+        S::best_price(&self.price_levels)
+    }
+    pub fn best_offer(&self) -> Option<OfferData> {
+        S::best_offer(&self.price_levels)
+    }
+    pub fn best_size(&self) -> Option<Size> {
+        S::best_size(&self.price_levels)
+    }
+
+    pub fn top_levels(&self, depth: usize) -> impl Iterator<Item = (&Price, &Size)> {
+        self.iter().take(depth)
+    }
+    pub fn order_side() -> OrderSide {
+        S::side()
+    }
+
+    pub fn volume_weighted_price(&self, cutoff: Volume) -> Option<Price> {
+        S::volume_weighted_price(&self.price_levels, cutoff)
+    }
+    pub fn len(&self) -> usize {
+        self.price_levels.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.price_levels.is_empty()
+    }
+}
+
+// impl<S: SideOps> Deref for HalfBook<S> {
+//     type Target = BTreeMap<Price, Size>;
+
+//     fn deref(&self) -> &Self::Target {
+//         &self.price_levels
+//     }
+// }
+
+// impl<S: SideOps> DerefMut for HalfBook<S> {
+//     fn deref_mut(&mut self) -> &mut Self::Target {
+//         &mut self.price_levels
+//     }
+// }
 
 #[derive(Debug, Clone, Default)]
 pub struct OrderBookState {
-    pub bids: BTreeMap<Price, Size>,
-    pub asks: BTreeMap<Price, Size>,
+    pub bids: BidBook,
+    pub asks: AskBook,
     last_update_id: u64,
     last_update_time: DateTime<Utc>,
     pub spread: Option<Decimal>,
@@ -19,31 +296,32 @@ pub struct OrderBookState {
     pub mid_price: Option<Decimal>,
     pub imbalance: Option<Decimal>,
     pub weighted_imbalance: Option<Decimal>,
-    pub best_bid: Option<(Price, Size)>,
-    pub best_ask: Option<(Price, Size)>,
+    pub best_bid: Option<OfferData>,
+    pub best_ask: Option<OfferData>,
 }
 
 impl OrderBookState {
-    pub fn apply_snapshot(&mut self, snapshot: DepthSnapshot) {
+    pub fn book(&self, side: OrderSide) -> Either<&BidBook, &AskBook> {
+        match side {
+            OrderSide::Bid => Either::Left(&self.bids),
+            OrderSide::Ask => Either::Right(&self.asks),
+        }
+    }
+    pub fn book_mut(&mut self, side: OrderSide) -> Either<&mut BidBook, &mut AskBook> {
+        match side {
+            OrderSide::Bid => Either::Left(&mut self.bids),
+            OrderSide::Ask => Either::Right(&mut self.asks),
+        }
+    }
+
+    pub fn apply_snapshot(&mut self, snapshot: &DepthSnapshot) {
         info!(
             "Applying snaphot with last_update_id: {}",
             snapshot.last_update_id
         );
 
-        self.bids.clear();
-        self.asks.clear();
-
-        for OfferData { price, size } in snapshot.bids {
-            if size > Decimal::ZERO {
-                self.bids.insert(price, size);
-            }
-        }
-
-        for OfferData { price, size } in snapshot.asks {
-            if size > Decimal::ZERO {
-                self.asks.insert(price, size);
-            }
-        }
+        self.bids.apply_snapshot_offers(&snapshot.bids);
+        self.asks.apply_snapshot_offers(&snapshot.asks);
 
         self.last_update_id = snapshot.last_update_id;
         self.last_update_time = Utc::now();
@@ -53,7 +331,7 @@ impl OrderBookState {
         );
     }
 
-    pub fn process_update(&mut self, update: DepthUpdate) -> Result<()> {
+    pub fn process_update(&mut self, update: &DepthUpdate) -> Result<()> {
         debug!(
             "Processing update: [{}-{}]",
             update.first_update_id, update.final_update_id
@@ -69,7 +347,8 @@ impl OrderBookState {
             )));
         }
 
-        self.apply_update_changes(update)
+        self.apply_update_changes(update);
+        Ok(())
     }
 
     pub fn process_buffer(&mut self, mut buffer: VecDeque<DepthUpdate>) -> Result<()> {
@@ -82,7 +361,7 @@ impl OrderBookState {
                 continue;
             }
             if update.first_update_id <= self.last_update_id + 1 {
-                self.apply_update_changes(update)?;
+                self.apply_update_changes(&update);
             } else {
                 warn!(
                     "Out of sequence update during initial buffering: {}",
@@ -96,71 +375,9 @@ impl OrderBookState {
         Ok(())
     }
 
-    fn apply_update_changes(&mut self, update: DepthUpdate) -> Result<()> {
-        for &OfferData { price, size } in &update.bids {
-            if size > Decimal::ZERO {
-                match self.bids.insert(price, size) {
-                    Some(existing_size) => {
-                        if existing_size != size {
-                            debug!(
-                                "Updated bid price: {} from {} to {} diff: {}",
-                                price,
-                                existing_size,
-                                size,
-                                existing_size - size
-                            );
-                        } else {
-                            debug!("Bid price: {} size unchanged: {}", price, size);
-                        }
-                    }
-                    None => {
-                        debug!("New bid price: {} with size: {}", price, size);
-                    }
-                }
-            } else {
-                match self.bids.remove(&price) {
-                    Some(existing_size) => {
-                        debug!("Removed bid price: {} with size: {}", price, existing_size);
-                    }
-                    None => {
-                        debug!("Ignoring zero size bid price: {}", price);
-                    }
-                }
-            }
-        }
-
-        for &OfferData { price, size } in &update.asks {
-            if size > Decimal::ZERO {
-                match self.asks.insert(price, size) {
-                    Some(existing_size) => {
-                        if existing_size != size {
-                            debug!(
-                                "Updated ask price: {} from {} to {} diff: {}",
-                                price,
-                                existing_size,
-                                size,
-                                existing_size - size
-                            );
-                        } else {
-                            debug!("Ask price: {} size unchanged: {}", price, size);
-                        }
-                    }
-                    None => {
-                        debug!("New ask price: {} with size: {}", price, size);
-                    }
-                }
-            } else {
-                match self.asks.remove(&price) {
-                    Some(existing_size) => {
-                        debug!("Removed ask price: {} with size: {}", price, existing_size);
-                    }
-                    None => {
-                        debug!("Ignoring zero size ask price: {}", price);
-                    }
-                }
-            }
-        }
-
+    fn apply_update_changes(&mut self, update: &DepthUpdate) {
+        self.bids.apply_change(&update.bids);
+        self.asks.apply_change(&update.asks);
         info!(
             "Update applied successfully, new last_update_id: {}",
             update.final_update_id
@@ -172,51 +389,105 @@ impl OrderBookState {
         self.mid_price = self.mid_price();
         self.imbalance = self.imbalance();
 
-        self.best_bid = self.bids.last_key_value().map(|(&k, &v)| (k, v));
-        self.best_ask = self.asks.first_key_value().map(|(&k, &v)| (k, v));
-
-        Ok(())
+        self.best_bid = self.bids.best_offer();
+        self.best_ask = self.asks.best_offer();
     }
 
     fn spread(&self) -> Option<Decimal> {
-        let top_bid = self.bids.last_key_value()?.0;
-        let top_ask = self.asks.first_key_value()?.0;
-
+        let (top_bid, top_ask) = (self.bids.best_price()?, self.asks.best_price()?);
         Some(top_ask - top_bid)
     }
 
     fn relative_spread(&self) -> Option<Decimal> {
-        let top_bid = self.bids.last_key_value()?.0;
-        let top_ask = self.asks.first_key_value()?.0;
-        let mid_price = (top_bid + top_ask) / Decimal::from(2);
+        let (top_bid, top_ask) = (self.bids.best_price()?, self.asks.best_price()?);
+        let mid_price = (top_bid + top_ask) / dec!(2);
 
         Some((top_ask - top_bid) / mid_price)
     }
 
     pub fn mid_price(&self) -> Option<Decimal> {
-        let top_bid = self.bids.last_key_value()?.0;
-        let top_ask = self.asks.first_key_value()?.0;
+        let (top_bid, top_ask) = (self.bids.best_price()?, self.asks.best_price()?);
         Some((top_bid + top_ask) / Decimal::from(2))
     }
 
     /// Vbid−Vask/Vbid+Vask
     /// Positive values indicate a buy imbalance, while negative values indicate a sell imbalance.
     pub fn imbalance(&self) -> Option<Decimal> {
-        let top_bid_volume = self.bids.last_key_value()?.1;
-        let top_ask_volume = self.asks.first_key_value()?.1;
-
+        let top_bid_volume = self.bids.best_size()?;
+        let top_ask_volume = self.asks.best_size()?;
         Some((top_bid_volume - top_ask_volume) / (top_bid_volume + top_ask_volume))
     }
 
-    pub fn imbalance_depth(&self, depth: impl Into<usize>) -> Option<Decimal> {
-        let depth = depth.into();
-
-        let bids = self.bids.values().rev().take(depth).sum::<Decimal>();
-
-        let asks = self.asks.values().take(depth).sum::<Decimal>();
-
-        Some((bids - asks) / (bids + asks))
+    pub fn imbalance_depth(&self, depth: impl Into<usize>) -> Decimal {
+        let depth: usize = depth.into();
+        if depth == 0 {
+            return Decimal::ZERO;
+        }
+        let bids = self
+            .bids
+            .top_levels(depth)
+            .map(|(_, &size)| size)
+            .sum::<Decimal>();
+        let asks = self
+            .asks
+            .top_levels(depth)
+            .map(|(_, &size)| size)
+            .sum::<Decimal>();
+        (bids - asks) / (bids + asks)
     }
+
+    pub fn volume_weighted_price(&self, side: OrderSide, cutoff: Decimal) -> Option<Decimal> {
+        let offers = match side {
+            OrderSide::Bid => self.bids.iter(),
+            OrderSide::Ask => self.asks.iter(),
+        };
+        let mut remaining_cutoff = cutoff;
+        let mut total_notional = Decimal::ZERO;
+        let mut total_size = Decimal::ZERO;
+
+        for (&price, &size) in offers {
+            let v = price * size;
+            if v >= remaining_cutoff {
+                let partial_size = remaining_cutoff / price;
+                total_notional += price * partial_size;
+                total_size += partial_size;
+                break; // Stop once we reach the cutoff
+            } else {
+                total_notional += v;
+                total_size += size;
+                remaining_cutoff -= v;
+            }
+        }
+
+        total_notional
+            .checked_div(total_size)
+            .filter(|&v| !v.is_zero())
+    }
+
+    /// Calculates the Volume-adjusted Mid Price (VAMP) over the top `depth` levels of the order book.
+    pub fn vamp(&self, depth: impl Into<usize>) -> Decimal {
+        let depth: usize = depth.into();
+        if depth == 0 {
+            return Decimal::ZERO;
+        }
+        let total_bid_volume: Decimal = self.bids.iter_prices().take(depth).sum();
+        let bid_price = self
+            .bids
+            .top_levels(depth)
+            .map(|(&price, &volume)| price * volume)
+            .sum::<Decimal>()
+            / total_bid_volume;
+        let total_ask_volume: Decimal = self.asks.iter_prices().take(depth).sum();
+        let ask_price = self
+            .asks
+            .top_levels(depth)
+            .map(|(&price, &volume)| price * volume)
+            .sum::<Decimal>()
+            / total_ask_volume;
+
+        (bid_price + ask_price) / dec!(2)
+    }
+
     /// Calculates the weighted relative imbalance over the top `depth` levels of the order book.
     ///
     /// Both buy and sell volumes are weighted so that orders nearer the top have a larger impact.
@@ -233,7 +504,7 @@ impl OrderBookState {
         let mut weighted_ask = Decimal::ZERO;
 
         // For bids, iterate from best (last) to deeper levels.
-        for (i, volume) in self.bids.values().rev().take(depth).enumerate() {
+        for (i, volume) in self.bids.iter_prices().take(depth).enumerate() {
             // Example weighting: orders closer to the top (i==0) get weight 1,
             // then weight decays as 1/(i+1)
             let weight = Decimal::ONE / Decimal::from((i as u32) + 1);
@@ -241,7 +512,7 @@ impl OrderBookState {
         }
 
         // For asks, iterate from best (first) to deeper levels.
-        for (i, volume) in self.asks.values().take(depth).enumerate() {
+        for (i, volume) in self.asks.iter_prices().take(depth).enumerate() {
             let weight = Decimal::ONE / Decimal::from((i as u32) + 1);
             weighted_ask += volume * weight;
         }
@@ -256,9 +527,9 @@ impl OrderBookState {
 
     pub fn relative_book_imbalance(&self, depth: impl Into<usize>) -> Option<Decimal> {
         let depth = depth.into();
-        let best_bid = self.best_bid()?;
-        let worst_bid = self.bids.iter().rev().nth(depth - 1).map(|(&k, _)| k)?;
-        let best_ask = self.best_ask()?;
+        let best_bid = self.bids.best_price()?;
+        let worst_bid = self.bids.iter().nth(depth - 1).map(|(&k, _)| k)?;
+        let best_ask = self.asks.best_price()?;
         let worst_ask = self.asks.iter().nth(depth - 1).map(|(&k, _)| k)?;
         let (bid_vwap, ask_vwap) = self.relative_imbalance_vwap(depth)?;
 
@@ -302,18 +573,5 @@ impl OrderBookState {
             / asks_iter.map(|(_, &size)| size).sum::<Decimal>();
 
         Some((bid_vwap, ask_vwap))
-    }
-
-    fn best_bid(&self) -> Option<Decimal> {
-        self.bids.last_key_value().map(|(&k, _)| k)
-    }
-    fn best_ask(&self) -> Option<Decimal> {
-        self.asks.first_key_value().map(|(&k, _)| k)
-    }
-    fn best_bid_size(&self) -> Option<Decimal> {
-        self.bids.last_key_value().map(|(_, &v)| v)
-    }
-    fn best_ask_size(&self) -> Option<Decimal> {
-        self.asks.first_key_value().map(|(_, &v)| v)
     }
 }

@@ -1,31 +1,49 @@
 use anyhow::Result;
 use binance_spot_connector_rust::{
     hyper::BinanceHttpClient,
-    market::{self, klines::KlineInterval},
+    market::{self},
     market_stream::{
-        agg_trade::AggTradeStream, avg_price::AvgPriceStream, book_ticker::BookTickerStream,
-        diff_depth::DiffDepthStream, kline::KlineStream, mini_ticker::MiniTickerStream,
+        agg_trade::AggTradeStream,
+        diff_depth::DiffDepthStream,
         rolling_window_ticker::RollingWindowTickerStream, ticker::TickerStream,
     },
     tokio_tungstenite::BinanceWebSocketClient,
 };
 use futures_util::StreamExt;
-use std::{collections::VecDeque, time::Duration};
+use std::time::Duration;
 use tokio::select;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
+use chrono::prelude::*;
 use marketmakerlib::{
     binance::{
         BinanceMessage,
-        data::{BinanceEvent, DepthSnapshot},
+        data::{
+            AggregateTrade, BinanceEvent, DepthSnapshot, DepthUpdate, TickerData, WindowTickerData,
+        },
     },
-    market_maker::{MarketMaker, MarketMakerConfig},
     order_book_state::OrderBookState,
-    recent_trades::RecentTrades,
 };
+use surrealdb::engine::remote::ws::Ws;
+use surrealdb::{Surreal, opt::auth::Root};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let db = Surreal::new::<Ws>("127.0.0.1:8000").await?;
+
+    db.signin(Root {
+        username: "root",
+        password: "root",
+    })
+    .await?;
+
+    let utc: DateTime<Utc> = Utc::now();
+    let db_name = format!("binance-{}", utc);
+
+    dbg!(&db_name);
+
+    db.use_ns("order-book").use_db(db_name).await?;
+
     tracing_subscriber::fmt::init();
     info!("Running!");
 
@@ -43,24 +61,18 @@ async fn main() -> Result<()> {
 
     let (depth_tx, mut depth_rx) = tokio::sync::mpsc::channel(2_000);
     let (agg_tx, mut agg_rx) = tokio::sync::mpsc::channel(2_000);
-    let (book_ticker_tx, mut book_ticker_rx) = tokio::sync::mpsc::channel(5_000);
-    let (mini_ticker_tx, mut mini_ticker_rx) = tokio::sync::mpsc::channel(500);
     let (ticker_tx, mut ticker_rx) = tokio::sync::mpsc::channel(500);
-    let (avg_price_tx, mut avg_price_rx) = tokio::sync::mpsc::channel(500);
-    let (kline_tx, mut kline_rx) = tokio::sync::mpsc::channel(500);
-    let (trade_tx, mut trade_rx) = tokio::sync::mpsc::channel(500);
     let (window_ticker_tx, mut window_ticker_rx) = tokio::sync::mpsc::channel(500);
 
     // Subscribe to streams
     conn.subscribe(vec![
         &DiffDepthStream::from_100ms(symbol).into(),
         &AggTradeStream::new(symbol).into(),
-        &BookTickerStream::from_symbol(symbol).into(),
-        &MiniTickerStream::from_symbol(symbol).into(),
         &TickerStream::from_symbol(symbol).into(),
-        &AvgPriceStream::new(symbol).into(),
-        &KlineStream::new(symbol, KlineInterval::Minutes3).into(),
-        //&TradeStream::new(symbol).into(),
+        // &KlineStream::new(symbol, KlineInterval::Minutes1).into(),
+        // &KlineStream::new(symbol, KlineInterval::Minutes3).into(),
+        // &KlineStream::new(symbol, KlineInterval::Minutes15).into(),
+        // &KlineStream::new(symbol, KlineInterval::Minutes30).into(),
         &RollingWindowTickerStream::from_symbol("1h", symbol).into(),
     ])
     .await;
@@ -75,7 +87,7 @@ async fn main() -> Result<()> {
 
     // Start a timer for 10 seconds
     let timer = tokio::time::Instant::now();
-    let duration = Duration::new(10, 0);
+    let duration = Duration::new(60 * 60 * 24, 0);
     // Initialize counters and timing
     let start_time = tokio::time::Instant::now();
     let mut last_check = start_time;
@@ -130,33 +142,14 @@ async fn main() -> Result<()> {
                     BinanceEvent::DepthUpdate(depth) => {
                         depth_tx.send(depth).await.expect("Failed to send depth");
                     }
-                    BinanceEvent::BookTicker(ticker) => {
-                        book_ticker_tx
-                            .send(ticker)
-                            .await
-                            .expect("Failed to send book ticker");
-                    }
-                    BinanceEvent::MiniTicker(ticker) => {
-                        mini_ticker_tx
-                            .send(ticker)
-                            .await
-                            .expect("Failed to send mini ticker");
-                    }
+                    BinanceEvent::BookTicker(ticker) => (),
+                    BinanceEvent::MiniTicker(ticker) => (),
                     BinanceEvent::Ticker(ticker) => {
                         ticker_tx.send(ticker).await.expect("Failed to send ticker");
                     }
-                    BinanceEvent::AvgPrice(avg_price) => {
-                        avg_price_tx
-                            .send(avg_price)
-                            .await
-                            .expect("Failed to send avg price");
-                    }
-                    BinanceEvent::Kline(kline) => {
-                        kline_tx.send(kline).await.expect("Failed to send kline");
-                    }
-                    BinanceEvent::Trade(trade) => {
-                        trade_tx.send(trade).await.expect("Failed to send trade");
-                    }
+                    BinanceEvent::AvgPrice(avg_price) => (),
+                    BinanceEvent::Kline(kline) => (),
+                    BinanceEvent::Trade(trade) => (),
                     BinanceEvent::WindowTicker(ticker) => {
                         window_ticker_tx
                             .send(ticker)
@@ -181,7 +174,6 @@ async fn main() -> Result<()> {
     warn!("Sleeping for 5 seconds to allow for snapshot processing...");
     tokio::time::sleep(Duration::from_secs(5)).await;
     warn!("Waking up...");
-    let mut rt = RecentTrades::new(100);
     let data = client
         .send(market::depth(symbol).limit(5_000))
         .await
@@ -193,61 +185,48 @@ async fn main() -> Result<()> {
         serde_json::from_str::<DepthSnapshot>(&data).expect("Failed to parse depth snapshot");
 
     order_book_state.apply_snapshot(&snapshot);
+    db.create::<Option<DepthSnapshot>>(("depth_snapshots", Utc::now().timestamp_micros()))
+        .content(snapshot)
+        .await
+        .expect("Failed to insert depth snapshot into database");
 
-    info!("Processing buffered updates...");
-    let mut buffer = Vec::new();
-    depth_rx.recv_many(&mut buffer, usize::MAX).await;
-    let buffer = buffer.into_iter().collect::<VecDeque<_>>();
-
-    order_book_state.process_buffer(buffer)?;
     // Start normal processing
     info!("Starting normal update processing...");
-    let mut buffer = Vec::new();
-    agg_rx.recv_many(&mut buffer, usize::MAX).await;
-    rt.update_many(buffer.into_iter());
-    let mut market_maker = MarketMaker::new(MarketMakerConfig::default(), order_book_state, rt);
+
     let mut i = 0;
     loop {
         i += 1;
         select! {
             Some(depth) = depth_rx.recv() => {
                 info!("Depth Update");
-                market_maker.handle_depth_update(depth)?;
+                order_book_state.process_update(&depth)?;
+                db.create::<Option<DepthUpdate>>(("depth_updates",Utc::now().timestamp_micros()))
+                    .content(depth)
+                    .await
+                    .expect("Failed to insert depth update into database");
             }
-            Some(trade) = agg_rx.recv() => {
+            Some(agg) = agg_rx.recv() => {
                 info!("AggTrade");
-                market_maker.handle_trade(trade)?;
-            }
-            Some(book_ticker) = book_ticker_rx.recv() => {
-                info!("BookTicker: {:?}", book_ticker);
 
-            }
-            Some(mini_ticker) = mini_ticker_rx.recv() => {
-                info!("Mini Ticker");
-
-                debug!("MiniTicker: {:?}", mini_ticker);
-
+                db.create::<Option<AggregateTrade>>(("aggregate_trades",Utc::now().timestamp_micros()))
+                    .content(agg)
+                    .await
+                    .expect("Failed to insert aggregate trade into database");
             }
             Some(ticker) = ticker_rx.recv() => {
                 info!("Ticker");
-                debug!("Ticker: {:?}", ticker);
-            }
-            Some(avg_price) = avg_price_rx.recv() => {
-                info!("AvgPrice");
-                debug!("AvgPrice: {:?}", avg_price);
+                db.create::<Option<TickerData>>(("tickers",Utc::now().timestamp_micros()))
+                    .content(ticker)
+                    .await
+                    .expect("Failed to insert ticker into database");
 
-            }
-            Some(kline) = kline_rx.recv() => {
-                info!("Kline");
-                debug!("Kline: {:?}", kline);
-            }
-            Some(trade) = trade_rx.recv() => {
-                info!("Trade");
-                debug!("Trade: {:?}", trade);
             }
             Some(window_ticker) = window_ticker_rx.recv() => {
                 info!("WindowTicker");
-                debug!("WindowTicker: {:?}", window_ticker);
+                db.create::<Option<WindowTickerData>>(("window_tickers",Utc::now().timestamp_micros()))
+                    .content(window_ticker)
+                    .await
+                    .expect("Failed to insert window ticker into database");
             }
             else => {
                 break;
@@ -255,12 +234,6 @@ async fn main() -> Result<()> {
 
 
         }
-
-        if i % 100 == 0 {
-            info!("Statistics: {}", market_maker.get_statistics());
-            i = 0;
-        }
-
         if timer.elapsed() >= duration {
             info!("10 seconds elapsed, exiting loop.");
             break; // Exit the loop after 10 seconds
@@ -272,8 +245,6 @@ async fn main() -> Result<()> {
 
     let (_, _) = tokio::join!(stream_handler, sender);
     info!("Exiting main loop");
-
-    info!("{:?}", market_maker);
 
     let total_time = start_time.elapsed();
     let average_throughput = total_messages as f64 / total_time.as_secs_f64();
