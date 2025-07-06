@@ -5,7 +5,7 @@ use rust_decimal_macros::dec;
 use tracing::{debug, info};
 
 use crate::{
-    binance::data::{DepthUpdate, OfferData},
+    data::binance::models::{DepthUpdate, OfferData},
     order_book_state::OrderBookState,
     recent_trades::{RecentTrades, Trade},
 };
@@ -139,15 +139,16 @@ impl MarketMaker {
             debug_mode: true, // Set to true for detailed logging
         }
     }
+
     /// Updates order book state with a new depth update
     pub fn handle_depth_update(&mut self, update: DepthUpdate) -> Result<()> {
         // Process the update to our order book
         self.order_book.process_update(&update)?;
 
         // Update tracking values
-        if let Some(imbalance) = self.order_book.imbalance {
-            self.last_imbalance = imbalance;
-        }
+        // if let Some(imbalance) = self.order_book.imbalance {
+        //     self.last_imbalance = imbalance;
+        // }
 
         // Check if any orders should be cancelled
         self.manage_existing_orders()?;

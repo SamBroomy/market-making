@@ -1,12 +1,16 @@
+use bincode::{Decode, Encode};
 use chrono::{DateTime, Utc, serde::ts_milliseconds};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Clone, Copy, Serialize)]
+#[derive(Debug, Deserialize, Clone, Copy, Serialize, Decode, Encode)]
 pub struct OfferData {
+
     #[serde(with = "rust_decimal::serde::str")]
+    #[bincode(with_serde)]
     pub price: Decimal,
     #[serde(with = "rust_decimal::serde::str")]
+    #[bincode(with_serde)]
     pub size: Decimal,
 }
 impl From<(Decimal, Decimal)> for OfferData {
@@ -31,7 +35,7 @@ pub struct DepthUpdate {
     pub asks: Vec<OfferData>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default, Decode, Encode)]
 #[serde(rename_all = "camelCase")]
 pub struct DepthSnapshot {
     pub last_update_id: u64,

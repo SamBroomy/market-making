@@ -1,31 +1,31 @@
+#![allow(unused_variables)]
+#![allow(dead_code)]
+use std::time::Duration;
+
 use anyhow::Result;
 use binance_spot_connector_rust::{
     hyper::BinanceHttpClient,
     market::{self},
     market_stream::{
-        agg_trade::AggTradeStream,
-        diff_depth::DiffDepthStream,
+        agg_trade::AggTradeStream, diff_depth::DiffDepthStream,
         rolling_window_ticker::RollingWindowTickerStream, ticker::TickerStream,
     },
     tokio_tungstenite::BinanceWebSocketClient,
 };
-use futures_util::StreamExt;
-use std::time::Duration;
-use tokio::select;
-use tracing::{error, info, warn};
-
 use chrono::prelude::*;
+use futures_util::StreamExt;
 use marketmakerlib::{
-    binance::{
-        BinanceMessage,
-        data::{
+    data::binance::{
+        models::{
             AggregateTrade, BinanceEvent, DepthSnapshot, DepthUpdate, TickerData, WindowTickerData,
         },
+        protocol::BinanceMessage,
     },
     order_book_state::OrderBookState,
 };
-use surrealdb::engine::remote::ws::Ws;
-use surrealdb::{Surreal, opt::auth::Root};
+use surrealdb::{Surreal, engine::remote::ws::Ws, opt::auth::Root};
+use tokio::select;
+use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -38,9 +38,9 @@ async fn main() -> Result<()> {
     .await?;
 
     let utc: DateTime<Utc> = Utc::now();
-    let db_name = format!("binance-{}", utc);
+    let db_name = format!("binance-{utc}");
 
-    dbg!(&db_name);
+    &db_name;
 
     db.use_ns("order-book").use_db(db_name).await?;
 
@@ -119,14 +119,14 @@ async fn main() -> Result<()> {
             if last_check.elapsed() >= check_interval {
                 let pending = message_rx.len();
                 let messages_per_second =
-                    messages_since_last_check as f64 / last_check.elapsed().as_secs_f64();
+                    f64::from(messages_since_last_check) / last_check.elapsed().as_secs_f64();
 
                 info!(
                     "Throughput: {:.2} msgs/sec, Total: {}, Pending: {}",
                     messages_per_second, total_messages, pending
                 );
                 if pending >= 100 {
-                    warn!("Back-logged")
+                    warn!("Back-logged");
                 }
 
                 messages_since_last_check = 0;
@@ -247,7 +247,7 @@ async fn main() -> Result<()> {
     info!("Exiting main loop");
 
     let total_time = start_time.elapsed();
-    let average_throughput = total_messages as f64 / total_time.as_secs_f64();
+    let average_throughput = f64::from(total_messages) / total_time.as_secs_f64();
     info!(
         "Final stats - Total messages: {}, Average throughput: {:.2} msgs/sec, Total time: {:.2}s",
         total_messages,

@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use rust_decimal::{Decimal, MathematicalOps};
 use rust_decimal_macros::dec;
 
-use crate::binance::data::{AggregateTrade, TradeEventData};
+use crate::data::binance::models::{AggregateTrade, TradeEventData};
 
 #[derive(Debug)]
 pub struct RecentTrades {
@@ -21,6 +21,7 @@ impl Default for RecentTrades {
 }
 
 impl RecentTrades {
+    #[must_use]
     pub fn new(window_size: usize) -> Self {
         Self {
             trades: VecDeque::with_capacity(window_size),
@@ -79,6 +80,7 @@ impl RecentTrades {
             / recent_count;
         variance.sqrt()
     }
+
     fn calculate_ewma_volatility(&self, lambda: Decimal) -> Option<Decimal> {
         if self.trades.is_empty() {
             return None;
@@ -115,7 +117,7 @@ impl RecentTrades {
 pub struct Trade {
     pub price: Decimal,
     pub quantity: Decimal,
-    trade_time: DateTime<Utc>,
+    timestamp: DateTime<Utc>,
     pub buyer_market_maker: bool,
     num_trades: u64,
 }
@@ -125,7 +127,7 @@ impl From<TradeEventData> for Trade {
         Self {
             price: event.price,
             quantity: event.quantity,
-            trade_time: event.trade_time,
+            timestamp: event.trade_time,
             buyer_market_maker: event.buyer_market_maker,
             num_trades: 1,
         }
@@ -137,7 +139,7 @@ impl From<AggregateTrade> for Trade {
         Self {
             price: event.price,
             quantity: event.quantity,
-            trade_time: event.trade_time,
+            timestamp: event.trade_time,
             buyer_market_maker: event.buyer_market_maker,
             num_trades: event.last_trade_id - event.first_trade_id + 1,
         }

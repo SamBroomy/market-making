@@ -48,7 +48,7 @@ pub struct AggregateTrade {
 struct Trade {
     price: Decimal,
     quantity: Decimal,
-    trade_time: DateTime<Utc>,
+    timestamp: DateTime<Utc>,
     buyer_market_maker: bool,
     num_trades: u64,
 }
@@ -58,7 +58,7 @@ impl From<TradeEventData> for Trade {
         Self {
             price: event.price,
             quantity: event.quantity,
-            trade_time: event.trade_time,
+            timestamp: event.trade_time,
             buyer_market_maker: event.buyer_market_maker,
             num_trades: 1,
         }
@@ -70,7 +70,7 @@ impl From<AggregateTrade> for Trade {
         Self {
             price: event.price,
             quantity: event.quantity,
-            trade_time: event.trade_time,
+            timestamp: event.trade_time,
             buyer_market_maker: event.buyer_market_maker,
             num_trades: event.last_trade_id - event.first_trade_id + 1,
         }

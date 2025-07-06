@@ -13,7 +13,7 @@ pub struct AveragePrice {
     #[serde(rename = "i")]
     interval: String,
     #[serde(rename = "w", with = "rust_decimal::serde::str")]
-    average_price: Decimal,
+    mean_trade_price: Decimal,
     #[serde(rename = "T", with = "ts_milliseconds")]
     last_trade_time: DateTime<Utc>,
 }
