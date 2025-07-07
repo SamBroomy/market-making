@@ -1,25 +1,17 @@
-use std::{str::FromStr, time::Duration};
+use std::{env, str::FromStr};
 
 use anyhow::{Context, Result};
-use binance_sdk::{
-    config::ConfigurationWebsocketApi,
-    spot::{
-        self,
+use binance_sdk::spot::{
         rest_api::DepthParams,
         websocket_streams::{
             DiffBookDepthParams, RollingWindowTickerParams, RollingWindowTickerWindowSizeEnum,
             TickerParams,
         },
-    },
-};
-use binance_spot_connector_rust::{market::depth, market_stream::ticker};
-use crossbeam_channel::unbounded;
+    };
 use iggy::{
-    bytes_serializable::BytesSerializable,
-    client::{Client, SystemClient, UserClient},
+    client::{Client, SystemClient},
     clients::{client::IggyClient, producer::IggyProducer},
     messages::send_messages::{Message, Partitioning},
-    users::defaults::{DEFAULT_ROOT_PASSWORD, DEFAULT_ROOT_USERNAME},
     utils::{duration::IggyDuration, expiry::IggyExpiry, topic_size::MaxTopicSize},
 };
 use market_making::{
@@ -55,14 +47,51 @@ async fn create_producer(client: &IggyClient, stream: &str, topic: &str) -> Resu
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::fmt()
-        .with_env_filter("warn,iggy=info,binance_sdk=info")
+        .with_env_filter(
+            env::var("RUST_LOG").unwrap_or_else(|_| {
+                "debug,iggy=info,binance_sdk=info,market_making=debug".to_string()
+            }),
+        )
         .init();
-    let symbol = "BTCUSDT".to_string();
+    let symbol = env::var("SYMBOL").unwrap_or_else(|_| "BTCUSDT".to_string());
 
-    let client = IggyClient::from_connection_string("iggy://iggy:Secret123!@localhost:5100")
-        .expect("Failed to create Iggy client");
-    client.connect().await?;
-    client.ping().await.expect("Failed to ping Iggy server");
+    let iggy_connection = env::var("IGGY_CONNECTION_STRING").unwrap_or_else(|_| {
+        // Check if we're running in Docker by looking for the iggy hostname
+        if env::var("DOCKER_ENV").is_ok() {
+            // Running inside Docker - use internal network
+            "iggy://iggy:Secret123!@iggy:3000".to_string()
+        } else {
+            // Running locally - use mapped port
+            "iggy://iggy:Secret123!@localhost:5100".to_string()
+        }
+    });
+
+    info!("Starting producer for symbol: {}", symbol);
+    info!("Connecting to Iggy at: {}", iggy_connection);
+
+    let client = IggyClient::from_connection_string(&iggy_connection)
+        .context("Failed to create Iggy client")?;
+
+    client
+        .connect()
+        .await
+        .context("Failed to connect to Iggy")?;
+
+    client.ping().await.context("Failed to ping Iggy server")?;
+
+    info!("Successfully connected to Iggy message queue");
+
+    // let client = IggyClient::from_connection_string(&iggy_connection)
+    //     .context("Failed to create Iggy client")?;
+
+    // client
+    //     .connect()
+    //     .await
+    //     .context("Failed to connect to Iggy")?;
+
+    // client.ping().await.context("Failed to ping Iggy server")?;
+
+    info!("Successfully connected to Iggy message queue");
 
     println!("Starting Binance Order Book Example");
     info!("Running!");
@@ -96,13 +125,36 @@ async fn main() -> Result<()> {
     let ticker_window_producer =
         create_producer(&client, &symbol, "rolling_window_ticker_1h").await?;
     let snapshot_producer = create_producer(&client, &symbol, "depth_snapshot").await?;
-    let orderbook_events_producer = create_producer(&client, &symbol, "orderbook_events").await?;
 
     let (snapshot_request_tx, snapshot_request_rx) = mpsc::unbounded_channel();
 
+    // Create channels for fan-out pattern
+    let (depth_for_stream_tx, mut depth_for_stream_rx) = mpsc::unbounded_channel();
+    let (depth_for_orderbook_tx, depth_for_orderbook_rx) = mpsc::unbounded_channel();
+
+    // Fan-out task: consumes depth_rx and forwards to both stream and order book
+    let depth_fanout_task = tokio::spawn(async move {
+        info!("Starting depth fan-out task");
+        while let Some(depth) = depth_rx.recv().await {
+            // Forward to stream processor
+            if let Err(e) = depth_for_stream_tx.send(depth.clone()) {
+                error!("Failed to forward depth to stream: {}", e);
+                break;
+            }
+
+            // Forward to order book
+            if let Err(e) = depth_for_orderbook_tx.send(depth) {
+                error!("Failed to forward depth to order book: {}", e);
+                break;
+            }
+        }
+        info!("Depth fan-out task completed");
+        Ok::<_, anyhow::Error>(())
+    });
+
     let depth_task = tokio::spawn(async move {
         info!("Starting depth processing task");
-        while let Some(depth) = depth_rx.recv().await {
+        while let Some(depth) = depth_for_stream_rx.recv().await {
             if let Err(e) = depth_producer
                 .send_one(
                     Message::from_str(&serde_json::to_string(&depth)?)
@@ -174,8 +226,8 @@ async fn main() -> Result<()> {
                 .await
                 .context("Failed to get depth snapshot");
 
-            if let Ok(snapshot) = &snapshot {
-                if let Err(e) = snapshot_producer
+            if let Ok(snapshot) = &snapshot
+                && let Err(e) = snapshot_producer
                     .send_one(
                         Message::from_str(&serde_json::to_string(snapshot)?)
                             .context("Failed to create message from snapshot")?,
@@ -184,7 +236,6 @@ async fn main() -> Result<()> {
                 {
                     tracing::error!("Failed to send snapshot message: {}", e);
                 }
-            }
 
             let _ = response_tx.send(snapshot);
         }
@@ -192,8 +243,13 @@ async fn main() -> Result<()> {
     });
 
     info!("Creating order book for symbol: {}", symbol);
-    let order_book =
-        OrderBook::new(symbol.clone(), Some(1000), depth_rx, snapshot_request_tx).await?;
+    let order_book = OrderBook::new(
+        symbol.clone(),
+        Some(1000),
+        depth_for_orderbook_rx,
+        snapshot_request_tx,
+    )
+    .await?;
 
     let order_book_task = tokio::spawn(async move {
         info!("Running order book for symbol: {}", symbol);
@@ -201,6 +257,7 @@ async fn main() -> Result<()> {
     });
 
     let results = tokio::try_join!(
+        depth_fanout_task,
         depth_task,
         ticker_task,
         ticker_window_task,
@@ -209,7 +266,8 @@ async fn main() -> Result<()> {
     );
 
     match results {
-        Ok((depth_res, ticker_res, window_res, snapshot_res, book_res)) => {
+        Ok((fanout_res, depth_res, ticker_res, window_res, snapshot_res, book_res)) => {
+            fanout_res?;
             depth_res?;
             ticker_res?;
             window_res?;

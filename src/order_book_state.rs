@@ -1,13 +1,17 @@
-use crate::data::binance::models::{DepthSnapshot, DepthUpdate, OfferData};
+use core::fmt;
+use std::{
+    collections::{BTreeMap, VecDeque},
+    marker::PhantomData,
+};
+
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use core::fmt;
 use either::Either;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use std::collections::{BTreeMap, VecDeque};
-use std::marker::PhantomData;
 use tracing::{debug, info, warn};
+
+use crate::data::binance::models::{DepthSnapshot, DepthUpdate, OfferData};
 
 type Price = Decimal;
 type Size = Decimal;
@@ -63,7 +67,8 @@ pub trait SideOps {
     fn best_offer(map: &BTreeMap<Price, Size>) -> Option<OfferData>;
     fn side() -> OrderSide;
 
-    #[must_use] fn volume_weighted_price(map: &BTreeMap<Price, Size>, cutoff: Volume) -> Option<Price> {
+    #[must_use]
+    fn volume_weighted_price(map: &BTreeMap<Price, Size>, cutoff: Volume) -> Option<Price> {
         let mut remaining_cutoff = cutoff;
         let mut total_notional = Decimal::ZERO;
         let mut total_size = Decimal::ZERO;
@@ -95,6 +100,7 @@ impl SideOps for BidSide {
     > {
         Either::Left(map.iter().rev())
     }
+
     fn iter_prices(
         map: &'_ BTreeMap<Price, Size>,
     ) -> Either<
@@ -103,16 +109,20 @@ impl SideOps for BidSide {
     > {
         Either::Left(map.values().rev())
     }
+
     fn best_price(map: &BTreeMap<Price, Size>) -> Option<Price> {
         map.last_key_value().map(|(&price, _)| price)
     }
+
     fn best_size(map: &BTreeMap<Price, Size>) -> Option<Size> {
         map.last_key_value().map(|(_, &size)| size)
     }
+
     fn best_offer(map: &BTreeMap<Price, Size>) -> Option<OfferData> {
         map.last_key_value()
             .map(|(&price, &size)| OfferData { price, size })
     }
+
     fn side() -> OrderSide {
         OrderSide::Bid
     }
@@ -127,6 +137,7 @@ impl SideOps for AskSide {
     > {
         Either::Right(map.iter())
     }
+
     fn iter_prices(
         map: &'_ BTreeMap<Price, Size>,
     ) -> Either<
@@ -139,26 +150,32 @@ impl SideOps for AskSide {
     fn best_price(map: &BTreeMap<Price, Size>) -> Option<Price> {
         map.first_key_value().map(|(&price, _)| price)
     }
+
     fn best_size(map: &BTreeMap<Price, Size>) -> Option<Size> {
         map.first_key_value().map(|(_, &size)| size)
     }
+
     fn best_offer(map: &BTreeMap<Price, Size>) -> Option<OfferData> {
         map.first_key_value()
             .map(|(&price, &size)| OfferData { price, size })
     }
+
     fn side() -> OrderSide {
         OrderSide::Ask
     }
 }
 
 impl<S: SideOps> HalfBook<S> {
-    #[must_use] pub fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         Self {
             price_levels: BTreeMap::new(),
             _phantom: PhantomData,
         }
     }
-    #[must_use] pub fn side_type_name() -> &'static str {
+
+    #[must_use]
+    pub fn side_type_name() -> &'static str {
         std::any::type_name::<S>()
     }
 
@@ -225,7 +242,8 @@ impl<S: SideOps> HalfBook<S> {
         }
     }
 
-    #[must_use] pub fn iter(
+    #[must_use]
+    pub fn iter(
         &self,
     ) -> Either<
         std::iter::Rev<std::collections::btree_map::Iter<'_, Price, Size>>,
@@ -233,7 +251,9 @@ impl<S: SideOps> HalfBook<S> {
     > {
         S::iter_from_best(&self.price_levels)
     }
-    #[must_use] pub fn iter_prices(
+
+    #[must_use]
+    pub fn iter_prices(
         &self,
     ) -> Either<
         std::iter::Rev<std::collections::btree_map::Values<'_, Price, Size>>,
@@ -242,31 +262,57 @@ impl<S: SideOps> HalfBook<S> {
         S::iter_prices(&self.price_levels)
     }
 
-    #[must_use] pub fn best_price(&self) -> Option<Price> {
+    #[must_use]
+    pub fn best_price(&self) -> Option<Price> {
         S::best_price(&self.price_levels)
     }
-    #[must_use] pub fn best_offer(&self) -> Option<OfferData> {
+
+    #[must_use]
+    pub fn best_offer(&self) -> Option<OfferData> {
         S::best_offer(&self.price_levels)
     }
-    #[must_use] pub fn best_size(&self) -> Option<Size> {
+
+    #[must_use]
+    pub fn best_size(&self) -> Option<Size> {
         S::best_size(&self.price_levels)
     }
 
     pub fn top_levels(&self, depth: usize) -> impl Iterator<Item = (&Price, &Size)> {
         self.iter().take(depth)
     }
-    #[must_use] pub fn order_side() -> OrderSide {
+
+    #[must_use]
+    pub fn order_side() -> OrderSide {
         S::side()
     }
 
-    #[must_use] pub fn volume_weighted_price(&self, cutoff: Volume) -> Option<Price> {
+    #[must_use]
+    pub fn volume_weighted_price(&self, cutoff: Volume) -> Option<Price> {
         S::volume_weighted_price(&self.price_levels, cutoff)
     }
-    #[must_use] pub fn len(&self) -> usize {
+
+    #[must_use]
+    pub fn len(&self) -> usize {
         self.price_levels.len()
     }
-    #[must_use] pub fn is_empty(&self) -> bool {
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
         self.price_levels.is_empty()
+    }
+}
+
+impl<'a, S: SideOps> IntoIterator for &'a HalfBook<S> {
+    type IntoIter = Either<
+        std::iter::Rev<
+            std::collections::btree_map::Iter<'a, Decimal, Decimal>,
+        >,
+        std::collections::btree_map::Iter<'a, Decimal, Decimal>,
+    >;
+    type Item = (&'a Decimal, &'a Decimal);
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -299,12 +345,14 @@ pub struct OrderBookState {
 }
 
 impl OrderBookState {
-    #[must_use] pub fn book(&self, side: OrderSide) -> Either<&BidBook, &AskBook> {
+    #[must_use]
+    pub fn book(&self, side: OrderSide) -> Either<&BidBook, &AskBook> {
         match side {
             OrderSide::Bid => Either::Left(&self.bid_depth),
             OrderSide::Ask => Either::Right(&self.ask_depth),
         }
     }
+
     pub fn book_mut(&mut self, side: OrderSide) -> Either<&mut BidBook, &mut AskBook> {
         match side {
             OrderSide::Bid => Either::Left(&mut self.bid_depth),
@@ -396,14 +444,16 @@ impl OrderBookState {
         Some((top_ask - top_bid) / mid_price)
     }
 
-    #[must_use] pub fn mid_price(&self) -> Option<Decimal> {
+    #[must_use]
+    pub fn mid_price(&self) -> Option<Decimal> {
         let (top_bid, top_ask) = (self.bid_depth.best_price()?, self.ask_depth.best_price()?);
         Some((top_bid + top_ask) / Decimal::from(2))
     }
 
     /// Vbid−Vask/Vbid+Vask
     /// Positive values indicate a buy imbalance, while negative values indicate a sell imbalance.
-    #[must_use] pub fn imbalance(&self) -> Option<Decimal> {
+    #[must_use]
+    pub fn imbalance(&self) -> Option<Decimal> {
         let top_bid_volume = self.bid_depth.best_size()?;
         let top_ask_volume = self.ask_depth.best_size()?;
         Some((top_bid_volume - top_ask_volume) / (top_bid_volume + top_ask_volume))
@@ -427,7 +477,8 @@ impl OrderBookState {
         (bids - asks) / (bids + asks)
     }
 
-    #[must_use] pub fn volume_weighted_price(&self, side: OrderSide, cutoff: Decimal) -> Option<Decimal> {
+    #[must_use]
+    pub fn volume_weighted_price(&self, side: OrderSide, cutoff: Decimal) -> Option<Decimal> {
         let offers = match side {
             OrderSide::Bid => self.bid_depth.iter(),
             OrderSide::Ask => self.ask_depth.iter(),

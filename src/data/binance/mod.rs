@@ -36,6 +36,7 @@ pub struct BinanceClient {
 impl BinanceClient {
     #[must_use]
     pub async fn new() -> Self {
+        const HAS_TIME_UNIT: bool = true;
         // let client = spot::SpotWsStreams::production(configuration);
         // let connection = client.connect().await?;
 
@@ -43,7 +44,6 @@ impl BinanceClient {
             .build()
             .expect("Failed to build WebSocket configuration");
         cfg.ws_url = Some(SPOT_WS_STREAMS_PROD_URL.to_string());
-        const HAS_TIME_UNIT: bool = true;
         if !HAS_TIME_UNIT {
             cfg.time_unit = None;
         }
@@ -181,7 +181,7 @@ impl BinanceClient {
             .filter_map(|&(k, ref v)| v.clone().map(|v| (k, v)))
             .collect();
 
-        let id_opt: Option<String> = vars.get("id").map(std::string::ToString::to_string);
+        let id_opt: Option<String> = vars.get("id").map(ToString::to_string);
 
         let stream = replace_websocket_streams_placeholders("/<symbol>@ticker", &vars);
 
@@ -220,7 +220,7 @@ impl BinanceClient {
             .filter_map(|&(k, ref v)| v.clone().map(|v| (k, v)))
             .collect();
 
-        let id_opt: Option<String> = vars.get("id").map(std::string::ToString::to_string);
+        let id_opt: Option<String> = vars.get("id").map(ToString::to_string);
 
         let stream = replace_websocket_streams_placeholders("/<symbol>@ticker_<windowSize>", &vars);
 

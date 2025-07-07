@@ -1,25 +1,17 @@
-use std::{str::FromStr, time::Duration};
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
-use binance_sdk::{
-    config::ConfigurationWebsocketApi,
-    spot::{
-        self,
+use binance_sdk::spot::{
         rest_api::DepthParams,
         websocket_streams::{
             DiffBookDepthParams, RollingWindowTickerParams, RollingWindowTickerWindowSizeEnum,
             TickerParams,
         },
-    },
-};
-use binance_spot_connector_rust::market::depth;
-use crossbeam_channel::unbounded;
+    };
 use iggy::{
-    bytes_serializable::BytesSerializable,
-    client::{Client, SystemClient, UserClient},
+    client::{Client, SystemClient},
     clients::{client::IggyClient, producer::IggyProducer},
     messages::send_messages::{Message, Partitioning},
-    users::defaults::{DEFAULT_ROOT_PASSWORD, DEFAULT_ROOT_USERNAME},
     utils::{duration::IggyDuration, expiry::IggyExpiry, topic_size::MaxTopicSize},
 };
 use market_making::{
@@ -89,33 +81,31 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-    let depth_rx_clone = depth_rx.clone();
-
     let depth_producer = create_producer(&client, &symbol, "diff_book_depth").await?;
 
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("failed to build Tokio runtime");
-        info!("Tokio runtime started for depth");
-        rt.block_on(async move {
-            info!("Starting depth processing");
-            while let Ok(depth) = depth_rx_clone.clone().recv() {
-                depth_producer
-                    .send(vec![
-                        Message::from_str(&serde_json::to_string(&depth).unwrap())
-                            .expect("Failed to create message from depth"),
-                    ])
-                    .await
-                    .expect("Failed to send depth message");
+    // std::thread::spawn(move || {
+    //     let rt = tokio::runtime::Builder::new_current_thread()
+    //         .enable_all()
+    //         .build()
+    //         .expect("failed to build Tokio runtime");
+    //     info!("Tokio runtime started for depth");
+    //     rt.block_on(async move {
+    //         info!("Starting depth processing");
+    //         while let Ok(depth) = depth_rx.clone().recv() {
+    //             depth_producer
+    //                 .send(vec![
+    //                     Message::from_str(&serde_json::to_string(&depth).unwrap())
+    //                         .expect("Failed to create message from depth"),
+    //                 ])
+    //                 .await
+    //                 .expect("Failed to send depth message");
 
-                info!("Depth: {:?}", depth);
-            }
-        });
-    });
+    //             info!("Depth: {:?}", depth);
+    //         }
+    //     });
+    // });
 
-    let ticker_rx = bc
+    let mut ticker_rx = bc
         .ticker(TickerParams::builder(symbol.clone()).build()?)
         .await?;
 
@@ -129,7 +119,7 @@ async fn main() -> Result<()> {
         info!("Tokio runtime started for ticker");
         rt.block_on(async move {
             info!("Starting ticker processing");
-            while let Ok(ticker) = ticker_rx.recv() {
+            while let Some(ticker) = ticker_rx.recv().await {
                 ticker_producer
                     .send(vec![
                         Message::from_str(&serde_json::to_string(&ticker).unwrap())
@@ -143,7 +133,7 @@ async fn main() -> Result<()> {
         });
     });
 
-    let ticker_window_1h_rx = bc
+    let mut ticker_window_1h_rx = bc
         .rolling_window_ticker(
             RollingWindowTickerParams::builder(
                 symbol.clone(),
@@ -164,7 +154,7 @@ async fn main() -> Result<()> {
         info!("Tokio runtime started for rolling window ticker");
         rt.block_on(async move {
             info!("Starting rolling window ticker processing");
-            while let Ok(ticker) = ticker_window_1h_rx.recv() {
+            while let Some(ticker) = ticker_window_1h_rx.recv().await {
                 ticker_window_producer
                     .send(vec![
                         Message::from_str(&serde_json::to_string(&ticker).unwrap())
@@ -225,11 +215,11 @@ async fn main() -> Result<()> {
         OrderBook::new(symbol.clone(), Some(1000), depth_rx, snapshot_request_tx).await?;
 
     info!("Running order book for symbol: {}", symbol);
-    let handle = order_book.run();
-    match handle.join() {
-        Ok(result) => result?,
-        Err(e) => return Err(anyhow::anyhow!("Order book thread panicked: {:?}", e)),
-    }
+    let handle = order_book.run().await;
+    // match handle.join() {
+    //     Ok(result) => result?,
+    //     Err(e) => return Err(anyhow::anyhow!("Order book thread panicked: {:?}", e)),
+    // }
 
     info!("Order book processing completed for symbol: {}", symbol);
 

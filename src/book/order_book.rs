@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, usize};
+use std::collections::VecDeque;
 
 use anyhow::Result;
 use tokio::sync::{mpsc, mpsc::UnboundedReceiver as Receiver, oneshot};
@@ -95,7 +95,7 @@ impl OrderBook {
             info!(symbol = %symbol, buffer_size = buffer.len(), "Processing buffered updates");
 
             // Process buffer with initialization rules
-            match state.process_update_buffer(buffer)? {
+            match state.process_update_buffer(buffer) {
                 ProcessResult::Updated => {
                     info!(symbol = %symbol, "Successfully processed buffered updates");
                 }
@@ -120,7 +120,6 @@ impl OrderBook {
         })
     }
 
-    #[must_use]
     pub async fn run(mut self) -> Result<()> {
         info!(symbol = %self.symbol, "Starting order book for {}", self.symbol);
         while let Some(update) = self.book_diff_update.recv().await {
@@ -152,12 +151,24 @@ impl OrderBook {
                                     buffer.len()
                                 );
                                 let buffer_deque: VecDeque<_> = buffer.into_iter().collect();
-                                match self.state.process_update_buffer(buffer_deque) {
-                                    Ok(_) => {
-                                        info!(symbol = %self.symbol, "Successfully processed buffered updates");
+                                let buffer_state = self.state.process_update_buffer(buffer_deque);
+                                // Do we need to handle the result of processing the buffer?
+                                match buffer_state {
+                                    ProcessResult::Updated => {
+                                        info!(symbol = %self.symbol, "Buffered updates processed successfully after snapshot");
                                     }
-                                    Err(e) => {
-                                        warn!(symbol = %self.symbol, error = %e, "Failed to process buffered updates");
+                                    ProcessResult::NeedsSnapshot => {
+                                        warn!(symbol = %self.symbol, "Buffered updates after snapshot require another snapshot");
+                                        let new_snapshot = Self::request_snapshot(
+                                            &self.symbol,
+                                            self.limit,
+                                            &self.snapshot_request_tx,
+                                        )
+                                        .await?;
+                                        self.state.apply_snapshot(new_snapshot);
+                                    }
+                                    ProcessResult::Stale => {
+                                        info!(symbol = %self.symbol, "No relevant buffered updates after snapshot");
                                     }
                                 }
                             }

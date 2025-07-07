@@ -1,0 +1,53 @@
+# Faster builds (after the first time) https://depot.dev/docs/languages/rust-dockerfile
+
+FROM rust:1.88 AS base
+RUN cargo install --locked cargo-chef sccache
+ENV RUSTC_WRAPPER=sccache SCCACHE_DIR=/sccache
+
+
+FROM base AS planner
+WORKDIR /app
+# Copy the Cargo.toml and Cargo.lock files
+COPY Cargo.toml Cargo.lock ./
+# Copy the rest of the source code
+COPY src ./src
+
+RUN --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
+    cargo chef prepare --recipe-path recipe.json
+
+FROM base AS builder
+WORKDIR /app
+
+# Install system dependencies
+RUN apt update && apt upgrade -y && apt-get install --reinstall build-essential
+RUN apt install -y \
+    libssl-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=planner /app/recipe.json recipe.json
+RUN --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
+    cargo chef cook --release --recipe-path recipe.json --bin producer
+
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
+    cargo build --release --bin producer
+
+
+FROM debian:bookworm-slim AS runtime
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apt update && apt upgrade -y && \
+    apt install -y \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the producer binary from the builder stage
+COPY --from=builder /app/target/release/producer /usr/local/bin/producer
+
+# Set the startup command
+CMD ["producer"]

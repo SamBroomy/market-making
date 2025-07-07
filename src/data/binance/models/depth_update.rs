@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Clone, Copy, Serialize, Decode, Encode)]
 pub struct OfferData {
-
     #[serde(with = "rust_decimal::serde::str")]
     #[bincode(with_serde)]
     pub price: Decimal,
@@ -19,7 +18,7 @@ impl From<(Decimal, Decimal)> for OfferData {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DepthUpdate {
     #[serde(rename = "E", with = "ts_milliseconds")]
     pub event_time: DateTime<Utc>,

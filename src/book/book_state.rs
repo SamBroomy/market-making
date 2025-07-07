@@ -146,7 +146,7 @@ impl LastSnapshot {
 
         // Adaptive thresholds based on how long since last snapshot
         let time_since_snapshot = Utc::now() - self.snapshot_time;
-        let threshold = self.calculate_adaptive_threshold(time_since_snapshot);
+        let threshold = Self::calculate_adaptive_threshold(time_since_snapshot);
 
         let needs_retrigger = bid_deviation > threshold || ask_deviation > threshold;
         if needs_retrigger {
@@ -162,10 +162,7 @@ impl LastSnapshot {
         needs_retrigger
     }
 
-    fn calculate_adaptive_threshold(
-        &self,
-        time_elapsed: chrono::Duration,
-    ) -> rust_decimal::Decimal {
+    fn calculate_adaptive_threshold(time_elapsed: chrono::Duration) -> Decimal {
         let base_threshold = dec!(0.5);
         let time_factor = Decimal::from(time_elapsed.num_seconds()) / dec!(1800); // 30 min
         let time_multiplier = dec!(1.0) + time_factor;
@@ -301,10 +298,7 @@ impl OrderBookState {
     }
 
     /// Process buffered updates during initialization - more strict about sequence
-    pub fn process_update_buffer(
-        &mut self,
-        buffer: VecDeque<DepthUpdate>,
-    ) -> Result<ProcessResult> {
+    pub fn process_update_buffer(&mut self, buffer: VecDeque<DepthUpdate>) -> ProcessResult {
         let buffer_size = buffer.len();
         debug!(buffer_size, "Processing order book update buffer");
 
@@ -328,7 +322,7 @@ impl OrderBookState {
                     gap = update.first_update_id - self.last_update_id,
                     "Sequence gap in buffer - this indicates we need a new snapshot"
                 );
-                return Ok(ProcessResult::NeedsSnapshot);
+                return ProcessResult::NeedsSnapshot;
             }
 
             // Apply the update
@@ -352,12 +346,12 @@ impl OrderBookState {
                 .last_snapshot
                 .needs_retrigger(current_best_bid, current_best_ask)
             {
-                return Ok(ProcessResult::NeedsSnapshot);
+                ProcessResult::NeedsSnapshot
+            } else {
+                ProcessResult::Updated
             }
-
-            Ok(ProcessResult::Updated)
         } else {
-            Ok(ProcessResult::Stale)
+            ProcessResult::Stale
         }
     }
 

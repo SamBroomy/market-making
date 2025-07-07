@@ -39,23 +39,19 @@ pub trait IterHalfBook {
     fn iter_from_worst(map: &PriceLevels) -> IterBook<'_>;
 }
 impl IterHalfBook for BidSide {
-    #[inline(always)]
     fn iter_from_best(map: &PriceLevels) -> IterBook<'_> {
         Either::Left(map.iter().rev())
     }
 
-    #[inline(always)]
     fn iter_from_worst(map: &PriceLevels) -> IterBook<'_> {
         Either::Right(map.iter())
     }
 }
 impl IterHalfBook for AskSide {
-    #[inline(always)]
     fn iter_from_best(map: &PriceLevels) -> IterBook<'_> {
         Either::Right(map.iter())
     }
 
-    #[inline(always)]
     fn iter_from_worst(map: &PriceLevels) -> IterBook<'_> {
         Either::Left(map.iter().rev())
     }
@@ -157,7 +153,6 @@ impl SideData for AskSide {
 }
 
 pub trait ApplySnapshot: BookSide {
-    #[inline(always)]
     fn apply_snapshot_offers(price_levels: &mut PriceLevels, offers: &[OfferData]) {
         assert!(
             !offers.is_empty(),
@@ -167,7 +162,6 @@ pub trait ApplySnapshot: BookSide {
         Self::apply_changes(price_levels, offers);
     }
 
-    #[inline(always)]
     fn apply_changes(price_levels: &mut PriceLevels, offers: &[OfferData]) {
         for &OfferData { price, size } in offers {
             if !size.is_zero() {
@@ -260,7 +254,7 @@ impl<Side: ApplySnapshot> HalfBook<Side> {
     }
 }
 impl<Side: BookSide> HalfBook<Side> {
-    pub fn side(&self) -> OrderSide {
+    pub fn side() -> OrderSide {
         Side::side()
     }
 }

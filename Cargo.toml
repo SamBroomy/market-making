@@ -2,10 +2,26 @@
 name = "market_making"
 version = "0.1.0"
 edition = "2024"
+license-file = "LICENSE"
+description = "A market making trading engine"
+repository = "https://github.com/SamBroomy/market-making"
+authors = ["SamBroomy"]
+readme = "README.md"
+publish = false
+keywords = [
+    "market-making",
+    "trading-engine",
+    "rust",
+    "binance",
+    "order-book",
+    "spot-trading",
+]
+categories = ["Applications", "Financial", "Trading", "Cryptocurrency"]
 
 [[bin]]
 name = "producer"
 path = "src/producer.rs"
+
 
 # [lib]
 # name = "marketmakerlib"
@@ -68,62 +84,62 @@ reqwest = { version = "0.12", features = ["json"] }
 # panic = 'abort'
 # codegen-units = 1
 
-# [lints.clippy]
-# multiple_crate_versions = "allow"
-# # But allow some pedantic lints that might be too strict
-# module_name_repetitions = "allow"
-# similar_names = "allow"
-# too_many_lines = "allow"
-# cast_precision_loss = "allow"
-# cast_possible_wrap = "allow"
-# cast_sign_loss = "allow"
-# missing_errors_doc = "allow"
-# missing_panics_doc = "allow"
+[lints.clippy]
+multiple_crate_versions = "allow"
+# But allow some pedantic lints that might be too strict
+module_name_repetitions = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
+cast_precision_loss = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
 
-# unreadable_literal = "allow"
+unreadable_literal = "allow"
 
-# #must_use_candidate = "allow" # --fix fixes this
-# return_self_not_must_use = "allow" # --fix does not fix this
-# cast_possible_truncation = "allow"
+#must_use_candidate = "allow" # --fix fixes this
+return_self_not_must_use = "allow" # --fix does not fix this
+cast_possible_truncation = "allow"
 
-# # Specific lints to deny (treat as errors)
-# dbg_macro = "deny"
-# todo = "deny"
-# unimplemented = "deny"
-# #unwrap_used = "deny"
+# Specific lints to deny (treat as errors)
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+#unwrap_used = "deny"
 
-# #unreadable_literal = "warn"
-# redundant_else = "warn"
-# needless_pass_by_value = "warn"
-
-
-# # Nursery lints (experimental but useful)
-# use_self = "warn"
-# option_if_let_else = "warn"
-# redundant_pub_crate = "warn"
-
-# # Restrict lints
-# dbg-macro = "warn"
-
-# # Enable Clippy lints for the entire workspace
-# all = { level = "warn", priority = -1 }
-# cargo = { level = "warn", priority = -1 }
-# correctness = { level = "warn", priority = -1 }
-# suspicious = { level = "warn", priority = -1 }
-# complexity = { level = "warn", priority = -1 }
-# perf = { level = "warn", priority = -1 }
-# style = { level = "warn", priority = -1 }
-# pedantic = { level = "warn", priority = -1 }
-# [lints.rust]
-# # Standard Rust lints
-# #smissing_docs = "warn"
-# unsafe_code = "forbid"
-# rust_2018_idioms = { level = "warn", priority = -1 }
-# trivial_casts = "warn"
-# trivial_numeric_casts = "warn"
-# unused_import_braces = "warn"
-# unused_qualifications = "warn"
+#unreadable_literal = "warn"
+redundant_else = "warn"
+needless_pass_by_value = "warn"
 
 
-# unused_variables = "allow"
-# dead_code = "allow"
+# Nursery lints (experimental but useful)
+use_self = "warn"
+option_if_let_else = "warn"
+redundant_pub_crate = "warn"
+
+# Restrict lints
+dbg-macro = "warn"
+
+# Enable Clippy lints for the entire workspace
+all = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+[lints.rust]
+# Standard Rust lints
+#smissing_docs = "warn"
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unused_import_braces = "warn"
+unused_qualifications = "warn"
+
+
+unused_variables = "allow"
+dead_code = "allow"
