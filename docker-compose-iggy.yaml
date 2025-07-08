@@ -1,0 +1,51 @@
+services:
+  iggy:
+    image: iggyrs/iggy:latest
+    container_name: iggy
+    restart: unless-stopped
+    environment:
+      - IGGY_ROOT_USERNAME=iggy
+      - IGGY_ROOT_PASSWORD=Secret123!
+      - IGGY_HTTP_ENABLED=true
+      - IGGY_HTTP_ADDRESS=0.0.0.0:80
+      - IGGY_TCP_ENABLED=true
+      - IGGY_TCP_ADDRESS=0.0.0.0:3000
+      - IGGY_QUIC_ENABLED=false
+      - IGGY_HEARTBEAT_ENABLED=true
+      - IGGY_HEARTBEAT_INTERVAL=5s
+    ports:
+      - "3010:80"
+      - "5100:3000"
+    networks:
+      - iggy
+    volumes:
+      - iggy:/iggy/local_data
+    # healthcheck:
+    #   test: ["CMD-SHELL", "nc -z localhost 3000 || exit 1"]
+    #   #test: ["CMD-SHELL", "iggy --tcp-server-address localhost:3000 --username iggy --password Secret123! ping > /tmp/healthcheck.log 2>&1 && echo 'Healthcheck passed' || (echo 'Healthcheck failed'; cat /tmp/healthcheck.log; exit 1)"]
+    #   start_period: 5s
+    #   interval: 1s
+    #   timeout: 1s
+    #   retries: 2
+
+
+  iggy-web-ui:
+    image: iggyrs/iggy-web-ui:latest
+    container_name: iggy-web-ui
+    restart: unless-stopped
+    environment:
+      - PUBLIC_IGGY_API_URL=http://iggy:80
+    ports:
+      - "3050:3050"
+    networks:
+      - iggy
+    depends_on:
+      - iggy
+
+
+
+networks:
+  iggy:
+
+volumes:
+  iggy:

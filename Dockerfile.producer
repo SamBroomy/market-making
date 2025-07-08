@@ -1,9 +1,10 @@
-# Faster builds (after the first time) https://depot.dev/docs/languages/rust-dockerfile
+# Build stage with musl target
+FROM rust:1.88-alpine AS base
 
-FROM rust:1.88 AS base
+
+# Add openssl-libs-static for static linking
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig
 RUN cargo install --locked cargo-chef sccache
-ENV RUSTC_WRAPPER=sccache SCCACHE_DIR=/sccache
-
 
 FROM base AS planner
 WORKDIR /app
@@ -12,42 +13,37 @@ COPY Cargo.toml Cargo.lock ./
 # Copy the rest of the source code
 COPY src ./src
 
-RUN --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
-    cargo chef prepare --recipe-path recipe.json
+RUN cargo chef prepare --recipe-path recipe.json
 
 FROM base AS builder
 WORKDIR /app
-
-# Install system dependencies
-RUN apt update && apt upgrade -y && apt-get install --reinstall build-essential
-RUN apt install -y \
-    libssl-dev \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY --from=planner /app/recipe.json recipe.json
-RUN --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
-    cargo chef cook --release --recipe-path recipe.json --bin producer
+# Build dependencies
+RUN cargo chef cook --release --recipe-path recipe.json --bin producer
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
-    cargo build --release --bin producer
+RUN cargo build --release --bin producer
 
+# Alpine runtime - much smaller!
+FROM alpine:3.22 AS runtime
+# RUN apk add --no-cache ca-certificates libgcc libssl3 curl bash
 
-FROM debian:bookworm-slim AS runtime
+# # Install Fluvio CLI
+# RUN curl -fsS https://hub.infinyon.cloud/install/install.sh?ctx=dc | bash
+# ENV PATH="/root/.fluvio/bin:$PATH"
 
-WORKDIR /app
-
-# Install runtime dependencies
-RUN apt update && apt upgrade -y && \
-    apt install -y \
-    ca-certificates \
-    libssl3 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy the producer binary from the builder stage
 COPY --from=builder /app/target/release/producer /usr/local/bin/producer
 
-# Set the startup command
+# # Create startup script
+# RUN printf '#!/bin/sh\n\
+#     echo "Waiting for Fluvio cluster..."\n\
+#     sleep 10\n\
+#     echo "Adding Fluvio profile..."\n\
+#     fluvio profile add docker sc:9003 docker || true\n\
+#     echo "Starting producer..."\n\
+#     exec producer\n' > /start.sh && chmod +x /start.sh
+
+# CMD ["/start.sh"]
+
 CMD ["producer"]

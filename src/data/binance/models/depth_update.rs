@@ -18,9 +18,10 @@ impl From<(Decimal, Decimal)> for OfferData {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Decode, Encode)]
 pub struct DepthUpdate {
     #[serde(rename = "E", with = "ts_milliseconds")]
+    #[bincode(with_serde)]
     pub event_time: DateTime<Utc>,
     #[serde(rename = "s")]
     pub symbol: String,
