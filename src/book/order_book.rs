@@ -14,12 +14,28 @@ pub trait SnapshotProvider: Send + Sync {
     async fn get_snapshot(&self, symbol: &str, limit: Option<u32>) -> Result<DepthSnapshot>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotReason {
+    Initial,
+    BufferedUpdates,
+}
+
+impl SnapshotReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Initial => "initial",
+            Self::BufferedUpdates => "buffered_updates",
+        }
+    }
+}
+
 // Request/Response types for snapshot channel
 #[derive(Debug)]
 pub struct SnapshotRequest {
     pub symbol: String,
     pub limit: Option<i32>,
     pub response_tx: oneshot::Sender<Result<DepthSnapshot>>,
+    pub reason: SnapshotReason,
 }
 
 impl SnapshotRequest {
@@ -27,6 +43,7 @@ impl SnapshotRequest {
     pub fn new(
         symbol: String,
         limit: Option<i32>,
+        reason: SnapshotReason,
     ) -> (Self, oneshot::Receiver<Result<DepthSnapshot>>) {
         assert!(
             limit.is_none_or(|l| l > 0),
@@ -42,6 +59,7 @@ impl SnapshotRequest {
                 symbol,
                 limit,
                 response_tx,
+                reason,
             },
             response_rx,
         )
@@ -77,7 +95,13 @@ impl OrderBook {
         // Step 1: Start buffering updates (this is already happening via the receiver)
 
         // Step 2: Get initial snapshot
-        let depth_snapshot = Self::request_snapshot(&symbol, limit, &snapshot_request_tx).await?;
+        let depth_snapshot = Self::request_snapshot(
+            &symbol,
+            limit,
+            &snapshot_request_tx,
+            SnapshotReason::Initial,
+        )
+        .await?;
         let mut state = OrderBookState::from_snapshot(depth_snapshot);
 
         // Step 3: Process buffered updates
@@ -101,8 +125,13 @@ impl OrderBook {
                 }
                 ProcessResult::NeedsSnapshot => {
                     info!(symbol = %symbol, "Buffer processing requires new snapshot");
-                    let new_snapshot =
-                        Self::request_snapshot(&symbol, limit, &snapshot_request_tx).await?;
+                    let new_snapshot = Self::request_snapshot(
+                        &symbol,
+                        limit,
+                        &snapshot_request_tx,
+                        SnapshotReason::BufferedUpdates,
+                    )
+                    .await?;
                     state.apply_snapshot(new_snapshot);
                 }
                 ProcessResult::Stale => {
@@ -131,7 +160,7 @@ impl OrderBook {
                 ProcessResult::NeedsSnapshot => {
                     info!("Requesting new snapshot for {}", self.symbol);
 
-                    match self.get_snapshot().await {
+                    match self.get_snapshot(SnapshotReason::BufferedUpdates).await {
                         Ok(new_snapshot) => {
                             info!(
                                 symbol = %self.symbol,
@@ -163,6 +192,7 @@ impl OrderBook {
                                             &self.symbol,
                                             self.limit,
                                             &self.snapshot_request_tx,
+                                            SnapshotReason::BufferedUpdates,
                                         )
                                         .await?;
                                         self.state.apply_snapshot(new_snapshot);
@@ -184,16 +214,17 @@ impl OrderBook {
         Ok(())
     }
 
-    async fn get_snapshot(&self) -> Result<DepthSnapshot> {
-        Self::request_snapshot(&self.symbol, self.limit, &self.snapshot_request_tx).await
+    async fn get_snapshot(&self, reason: SnapshotReason) -> Result<DepthSnapshot> {
+        Self::request_snapshot(&self.symbol, self.limit, &self.snapshot_request_tx, reason).await
     }
 
     async fn request_snapshot(
         symbol: &str,
         limit: Option<i32>,
         sender: &SnapshotRequestSender,
+        reason: SnapshotReason,
     ) -> Result<DepthSnapshot> {
-        let (request, response_rx) = SnapshotRequest::new(symbol.to_string(), limit);
+        let (request, response_rx) = SnapshotRequest::new(symbol.to_string(), limit, reason);
         request.send(sender)?;
         response_rx.await?
     }

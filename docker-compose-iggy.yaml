@@ -1,5 +1,6 @@
 services:
   iggy:
+    #image: apache/iggy:edge
     image: iggyrs/iggy:latest
     container_name: iggy
     restart: unless-stopped
@@ -17,16 +18,15 @@ services:
       - "3010:80"
       - "5100:3000"
     networks:
-      - iggy
+      - iggy-network
     volumes:
       - iggy:/iggy/local_data
-    # healthcheck:
-    #   test: ["CMD-SHELL", "nc -z localhost 3000 || exit 1"]
-    #   #test: ["CMD-SHELL", "iggy --tcp-server-address localhost:3000 --username iggy --password Secret123! ping > /tmp/healthcheck.log 2>&1 && echo 'Healthcheck passed' || (echo 'Healthcheck failed'; cat /tmp/healthcheck.log; exit 1)"]
-    #   start_period: 5s
-    #   interval: 1s
-    #   timeout: 1s
-    #   retries: 2
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 3000 || exit 1"]
+      start_period: 5s
+      interval: 1s
+      timeout: 1s
+      retries: 2
 
 
   iggy-web-ui:
@@ -38,14 +38,129 @@ services:
     ports:
       - "3050:3050"
     networks:
-      - iggy
+      - iggy-network
     depends_on:
       - iggy
 
 
 
+  timescaledb:
+    image: timescale/timescaledb:latest-pg17
+    container_name: timescaledb
+    networks:
+      - timescale-network
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=market_data
+    volumes:
+      - timescale-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d market_data"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    networks:
+      - timescale-network
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=pgadmin4@pgadmin.org
+      - PGADMIN_DEFAULT_PASSWORD=admin
+      - POSTGRES_HOST=timescaledb
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=market_data
+      - PGADMIN_CONFIG_SERVER_MODE=False
+      - PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED=False
+    ports:
+      - 5050:80
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    user: root
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    # entrypoint: |
+    #   #!/bin/sh
+    #   SERVERS_JSON_PATH="/pgadmin4/servers.json"
+    #   PGPASSFILE="$HOME/.pgpass"
+
+    #   # Create the .pgpass file for password
+    #   echo "Creating pgpass file at $PGPASSFILE"
+    #   echo "${POSTGRES_HOST}:*:*:${POSTGRES_USER}:${POSTGRES_PASSWORD}" > "$PGPASSFILE"
+    #   chmod 600 $PGPASSFILE
+    #   cat $PGPASSFILE
+    #   echo "pgpass file created successfully."
+
+    #   echo "Creating servers.json file in $SERVERS_JSON_PATH"
+    #   cat << EOF > $SERVERS_JSON_PATH
+    #   {
+    #       "Servers": {
+    #           "1": {
+    #               "Name": "My Postgres",
+    #               "Group": "Servers",
+    #               "Host": "${POSTGRES_HOST}",
+    #               "Port": ${POSTGRES_PORT},
+    #               "MaintenanceDB": "${POSTGRES_DB}",
+    #               "Username": "${POSTGRES_USER}",
+    #               "PassFile": "$PGPASSFILE",
+    #               "SSLMode": "prefer"
+    #           }
+    #       }
+    #   }
+    #   EOF
+
+    #   echo "$SERVERS_JSON_PATH file created successfully."
+    #   cat $SERVERS_JSON_PATH
+
+    #   echo "Starting pgAdmin4..."
+    #   exec /entrypoint.sh
+    #   echo "pgAdmin4 started."
+
+
+  grafana:
+    image: grafana/grafana-enterprise
+    container_name: grafana
+    restart: unless-stopped
+    networks:
+      - iggy-network
+      - timescale-network
+    ports:
+      - '3000:3000'
+    volumes:
+      - grafana-storage:/var/lib/grafana
+
+
+
+  producer:
+    build:
+      context: .
+      dockerfile: Dockerfile.producer
+    container_name: market-making-producer
+    networks:
+      - iggy-network
+      - timescale-network
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
+    environment:
+      - RUST_LOG=warn
+      - SYMBOL=ETHUSDT
+      - DOCKER_ENV=true
+    restart: unless-stopped
+
 networks:
-  iggy:
+  iggy-network:
+  timescale-network:
 
 volumes:
   iggy:
+  timescale-data:
+  pgadmin-data:
+  grafana-storage:

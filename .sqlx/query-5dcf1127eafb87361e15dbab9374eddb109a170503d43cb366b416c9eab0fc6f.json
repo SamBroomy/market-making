@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO rolling_window_ticker (\n                event_type, event_time, symbol, price_change, price_change_percent,\n                open_price, high_price, low_price, close_price, weighted_avg_price,\n                volume, quote_volume, open_time, close_time, first_trade_id,\n                last_trade_id, trade_count\n            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz",
+        "Text",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Timestamptz",
+        "Timestamptz",
+        "Numeric",
+        "Numeric",
+        "Numeric"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5dcf1127eafb87361e15dbab9374eddb109a170503d43cb366b416c9eab0fc6f"
+}

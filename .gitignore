@@ -16,4 +16,6 @@ debug/
 target/
 !Dockerfile*
 
+!.sqlx/*.json
+!migrations/*.sql
 !docker-compose*.yaml

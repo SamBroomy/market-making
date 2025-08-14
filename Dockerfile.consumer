@@ -1,5 +1,5 @@
 # Build stage with musl target
-FROM rust:alpine AS base
+FROM rust:1.88-alpine AS base
 
 
 # Add openssl-libs-static for static linking
@@ -13,7 +13,6 @@ COPY Cargo.toml Cargo.lock ./
 # Copy the rest of the source code
 COPY src ./src
 
-
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM base AS builder
@@ -24,9 +23,7 @@ RUN cargo chef cook --release --recipe-path recipe.json --bin producer
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-COPY .sqlx ./.sqlx
-COPY migrations ./migrations
-RUN cargo build --release --bin producer
+RUN cargo build --release --bin consumer
 
 # Alpine runtime - much smaller!
 FROM alpine:3.22 AS runtime
@@ -36,7 +33,7 @@ FROM alpine:3.22 AS runtime
 # RUN curl -fsS https://hub.infinyon.cloud/install/install.sh?ctx=dc | bash
 # ENV PATH="/root/.fluvio/bin:$PATH"
 
-COPY --from=builder /app/target/release/producer /usr/local/bin/producer
+COPY --from=builder /app/target/release/consumer /usr/local/bin/consumer
 
 # # Create startup script
 # RUN printf '#!/bin/sh\n\
@@ -49,4 +46,4 @@ COPY --from=builder /app/target/release/producer /usr/local/bin/producer
 
 # CMD ["/start.sh"]
 
-CMD ["producer"]
+CMD ["consumer"]

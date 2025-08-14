@@ -1,0 +1,47 @@
+
+services:
+  consumer:
+    build:
+      context: ..
+      dockerfile: Dockerfile.consumer
+    container_name: market-making-consumer
+    environment:
+      - RUST_LOG=info
+      - SYMBOL=BTCUSDT
+    restart: unless-stopped
+    network_mode: "host"
+
+  # trading-engine:
+  #   build:
+  #     context: ..
+  #     dockerfile: Dockerfile.consumer
+  #   container_name: market-making-trading-engine
+  #   environment:
+  #     - RUST_LOG=info
+  #     - CONSUMER_GROUP=trading-engine
+  #     - SYMBOLS=BTCUSDT,ETHUSDT
+  #   restart: unless-stopped
+  #   networks:
+  #     - fluvio-network
+  #   depends_on:
+  #     - fluvio-health-check
+  #   profiles:
+  #     - trading  # Only start with --profile trading
+
+  # analytics-engine:
+  #   build:
+  #     context: ..
+  #     dockerfile: Dockerfile.analytics
+  #   container_name: market-making-analytics
+  #   environment:
+  #     - RUST_LOG=info
+  #     - CONSUMER_GROUP=analytics
+  #   restart: unless-stopped
+  #   networks:
+  #     - fluvio-network
+  #   depends_on:
+  #     - fluvio-health-check
+  #   profiles:
+  #     - analytics  # Only start with --profile analytics
+
+  # Health check service to ensure Fluvio is ready

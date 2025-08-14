@@ -1,0 +1,11 @@
+services:
+  producer:
+    build:
+      context: ..
+      dockerfile: Dockerfile.producer
+    container_name: market-making-producer
+    environment:
+      - RUST_LOG=info
+      - SYMBOL=BTCUSDT
+    restart: unless-stopped
+    network_mode: "host"  # Use host networking to access 127.0.0.1:9103

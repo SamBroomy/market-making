@@ -23,36 +23,22 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.sc-setup
-      # dockerfile_inline: |
-      #   FROM ubuntu:20.04
-      #   RUN apt-get update
-      #   RUN apt-get install -y curl unzip
-      #   RUN curl -fsS https://hub.infinyon.cloud/install/install.sh?ctx=dc | bash
-      #   ENV PATH "$PATH:/root/.fluvio/bin"
-      #   ENV PATH "$PATH:/root/.fvm/bin"
     container_name: sc-setup
     networks:
       - fluvio
     environment:
       - RUST_LOG=info
-    entrypoint: >
-      /bin/sh -c "
-      fluvio profile add docker sc:9003 docker;
-      fluvio cluster spu register --id 5001 -p spu:9010 -l 0.0.0.0:9110 --private-server spu:9011;
-      fluvio cluster check;
-
-      exit 0;
-      "
     depends_on:
-      # fluvio profile add docker sc:9003 docker;
-      # fluvio cluster spu register --id 5001 -p 0.0.0.0:9110 --private-server spu:9011;
-      # fluvio cluster spu register --id 5001 -p spu:9010 --private-server spu:9011;
-      # fluvio cluster check;
-      # fluvio cluster status;
-      # exit 0;
       sc:
         condition: service_healthy
 
+      # fluvio profile add docker sc:9003 docker;
+      # fluvio cluster spu register --id 5001 -p 0.0.0.0:9110 --private-server spu:9011;
+      # fluvio cluster spu register --id 5001 -p spu:9010 --private-server spu:9011;
+      # Unsure if -l does anything here.
+      # fluvio cluster check;
+      # fluvio cluster status;
+      # exit 0;
   spu:
     image: infinyon/fluvio:stable
     container_name: spu
@@ -94,6 +80,8 @@ services:
       - RUST_LOG=info
       - SYMBOL=ETHUSDT
     restart: unless-stopped
+    volumes:
+      - $HOME/.fluvio/config:/usr/.fluvio/config:ro
 
 
 volumes:

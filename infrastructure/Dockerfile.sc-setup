@@ -1,0 +1,29 @@
+FROM alpine:3.22
+
+# Install dependencies
+RUN apk update && apk upgrade && \
+    apk add --no-cache \
+    curl \
+    unzip \
+    bash \
+    netcat-openbsd \
+    && rm -rf /var/cache/apk/*
+
+# Install Fluvio CLI
+RUN curl -fsS https://hub.infinyon.cloud/install/install.sh?ctx=dc | bash
+
+ENV PATH "$PATH:/root/.fluvio/bin"
+ENV PATH "$PATH:/root/.fvm/bin"
+
+# Create the setup script
+RUN printf '#!/bin/bash\n\
+    echo "Adding Fluvio profile..."\n\
+    fluvio profile add docker sc:9003 docker\n\
+    echo "Registering SPU with internal network address..."\n\
+    fluvio cluster spu register --id 5001 -p 0.0.0.0:9110 --private-server spu:9011\n\
+    echo "Checking cluster status..."\n\
+    fluvio cluster check\n\
+    echo "Setup completed successfully"\n\
+    exit 0\n' > /setup.sh && chmod +x /setup.sh
+
+ENTRYPOINT ["/setup.sh"]

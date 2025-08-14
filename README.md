@@ -60,3 +60,8 @@ The implementation tries to visualize these concepts by connecting to real marke
 ## References
 
 - [Market Making and Mean Reversion](https://wp.lancs.ac.uk/finec2018/files/2018/09/FINEC-2018-028-Xiaofei.Lu_.pdf)
+
+  ## Security Note
+
+  This setup exposes Fluvio on your local network (port 9110).
+  Only run this on trusted networks. For production, use proper authentication and TLS.
