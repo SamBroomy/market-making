@@ -151,8 +151,7 @@ services:
 
     environment:
       - RUST_LOG=warn
-      - SYMBOL=ETHUSDT
-      - DOCKER_ENV=true
+      - SYMBOLS=BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,DOTUSDT,DOGEUSDT,MAGICUSDT,ETHBTC
     restart: unless-stopped
 
 networks:

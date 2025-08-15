@@ -1,15 +1,11 @@
-use std::{
-    env,
-    str::FromStr,
-    sync::{Arc, LazyLock},
-};
+use std::{env, str::FromStr};
 
 use anyhow::{Context, Result};
 use binance_sdk::spot::{
     rest_api::DepthParams,
     websocket_streams::{
-        DiffBookDepthParams, RollingWindowTickerParams, RollingWindowTickerWindowSizeEnum,
-        TickerParams,
+        AggTradeParams, DiffBookDepthParams, RollingWindowTickerParams,
+        RollingWindowTickerWindowSizeEnum, TickerParams,
     },
 };
 use chrono::Utc;
@@ -25,58 +21,89 @@ use market_making::{
     book::{OrderBook, SnapshotRequest},
     data::binance::{
         BinanceClient,
-        models::{DepthUpdate, TickerData, WindowTickerData},
+        models::{AggregateTrade, DepthUpdate, TickerData, WindowTickerData},
     },
 };
 use rust_decimal::Decimal;
 use sqlx::PgPool;
-use tokio::sync::mpsc;
-use tracing::{error, info, warn};
-
+use tokio::sync::{OnceCell, mpsc};
+use tracing::{debug, error, info, warn};
 const PARTITIONS: u32 = 1;
 
-// Lazy static database pool
-static DB_POOL: LazyLock<PgPool> = LazyLock::new(|| {
-    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| {
-        if is_docker() {
-            "postgres://postgres:password@timescaledb:5432/market_data".to_string()
-        } else {
-            "postgres://postgres:password@localhost:5432/market_data".to_string()
-        }
-    });
+static DB_POOL: OnceCell<PgPool> = OnceCell::const_new();
 
-    tokio::runtime::Handle::current().block_on(async {
-        info!("Connecting to TimescaleDB at: {database_url}");
-        PgPool::connect(&database_url)
-            .await
-            .expect("Failed to connect to TimescaleDB")
-    })
-});
+async fn get_db_pool() -> &'static PgPool {
+    DB_POOL
+        .get_or_init(|| async {
+            let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| {
+                if is_docker() {
+                    "postgres://postgres:password@timescaledb:5432/market_data".to_string()
+                } else {
+                    "postgres://postgres:password@localhost:5432/market_data".to_string()
+                }
+            });
 
-// Lazy static Iggy client
-static IGGY_CLIENT: LazyLock<IggyClient> = LazyLock::new(|| {
-    let iggy_connection = env::var("IGGY_CONNECTION_STRING").unwrap_or_else(|_| {
-        if is_docker() {
-            "iggy://iggy:Secret123!@iggy:3000".to_string()
-        } else {
-            "iggy://iggy:Secret123!@localhost:5100".to_string()
-        }
-    });
+            info!("Connecting to TimescaleDB at: {database_url}");
+            let pool = PgPool::connect(&database_url)
+                .await
+                .context("Failed to connect to TimescaleDB")
+                .unwrap();
 
-    tokio::runtime::Handle::current().block_on(async {
-        println!("Connecting to Iggy message queue at: {iggy_connection}");
-        let client = IggyClient::from_connection_string(&iggy_connection)
-            .expect("Failed to create Iggy client");
+            sqlx::migrate!("./migrations")
+                .run(&pool)
+                .await
+                .context("Failed to run database migrations")
+                .unwrap();
 
-        client.connect().await.expect("Failed to connect to Iggy");
-        client.ping().await.expect("Failed to ping Iggy server");
+            pool
+        })
+        .await
+}
 
-        client
-    })
-});
+static IGGY_CLIENT: OnceCell<IggyClient> = OnceCell::const_new();
+
+async fn get_iggy_client() -> &'static IggyClient {
+    IGGY_CLIENT
+        .get_or_init(|| async {
+            let iggy_connection = env::var("IGGY_CONNECTION_STRING").unwrap_or_else(|_| {
+                if is_docker() {
+                    "iggy://iggy:Secret123!@iggy:3000".to_string()
+                } else {
+                    "iggy://iggy:Secret123!@localhost:5100".to_string()
+                }
+            });
+
+            info!("Connecting to Iggy message queue at: {iggy_connection}");
+            let client = IggyClient::from_connection_string(&iggy_connection)
+                .context("Failed to create Iggy client")
+                .unwrap();
+
+            client
+                .connect()
+                .await
+                .context("Failed to connect to Iggy")
+                .unwrap();
+            client
+                .ping()
+                .await
+                .context("Failed to ping Iggy server")
+                .unwrap();
+            client
+        })
+        .await
+}
+
+static BINANCE_CLIENT: OnceCell<BinanceClient> = OnceCell::const_new();
+
+async fn get_binance_client() -> &'static BinanceClient {
+    BINANCE_CLIENT
+        .get_or_init(|| async { BinanceClient::new().await })
+        .await
+}
 
 async fn create_producer(stream: &str, topic: &str) -> Result<IggyProducer> {
-    let mut producer = IGGY_CLIENT
+    let mut producer = get_iggy_client()
+        .await
         .producer(stream, topic)
         .context("Failed to create producer")?
         .batch_size(1000)
@@ -108,13 +135,15 @@ async fn run_depth_task(
     mut depth_rx: mpsc::UnboundedReceiver<DepthUpdate>,
     depth_for_orderbook_tx: mpsc::UnboundedSender<DepthUpdate>,
 ) -> Result<()> {
-    let depth_producer = create_producer("BINANCE", "diff_book_depth")
+    let pool = get_db_pool().await;
+    let depth_producer = create_producer("diff_book_depth", &symbol)
         .await
         .context("Failed to create depth producer")?;
 
     info!("Starting depth task for symbol: {}", symbol);
 
     while let Some(depth) = depth_rx.recv().await {
+        debug!("Depth Update - {}: {:?}", symbol, depth);
         // Forward to order book
         if depth_for_orderbook_tx.send(depth.clone()).is_err() {
             warn!("Order book receiver for {} is closed", symbol);
@@ -141,7 +170,7 @@ async fn run_depth_task(
             serde_json::to_value(&depth.bids).unwrap(),
             serde_json::to_value(&depth.asks).unwrap(),
         )
-        .execute(&*DB_POOL)
+        .execute(pool)
         .await {
             error!("Failed to insert depth update for {}: {}", symbol, e);
         }
@@ -155,12 +184,14 @@ async fn run_ticker_task(
     symbol: String,
     mut ticker_rx: mpsc::UnboundedReceiver<TickerData>,
 ) -> Result<()> {
-    let ticker_producer = create_producer("BINANCE", "ticker")
+    let pool = get_db_pool().await;
+    let ticker_producer = create_producer("ticker", &symbol)
         .await
         .context("Failed to create ticker producer")?;
     info!("Starting ticker task for symbol: {}", symbol);
 
     while let Some(ticker) = ticker_rx.recv().await {
+        debug!("Ticker - {}: {:?}", symbol, ticker);
         // Send to message queue
         let message = Message::from_str(&serde_json::to_string(&ticker)?)
             .context("Failed to create message from ticker data")?;
@@ -202,7 +233,7 @@ async fn run_ticker_task(
             Decimal::from(ticker.last_trade_id),
             Decimal::from(ticker.trade_count),
         )
-        .execute(&*DB_POOL)
+        .execute(pool)
         .await {
             error!("Failed to insert ticker data for {}: {}", symbol, e);
         }
@@ -216,12 +247,14 @@ async fn run_window_ticker_task(
     symbol: String,
     mut window_rx: mpsc::UnboundedReceiver<WindowTickerData>,
 ) -> Result<()> {
-    let window_producer = create_producer("BINANCE", "rolling_window_ticker_1h")
+    let pool = get_db_pool().await;
+    let window_producer = create_producer("rolling_window_ticker_1h", &symbol)
         .await
         .context("Failed to create window ticker producer")?;
     info!("Starting window ticker task for symbol: {}", symbol);
 
     while let Some(ticker) = window_rx.recv().await {
+        debug!("Window Ticker - {}: {:?}", symbol, ticker);
         // Send to message queue
         let message = Message::from_str(&serde_json::to_string(&ticker)?)
             .context("Failed to create message from window ticker data")?;
@@ -257,7 +290,7 @@ async fn run_window_ticker_task(
             Decimal::from(ticker.last_trade_id),
             Decimal::from(ticker.trade_count),
         )
-        .execute(&*DB_POOL)
+        .execute(pool)
         .await
         {
             error!("Failed to insert window ticker data for {}: {}", symbol, e);
@@ -268,12 +301,81 @@ async fn run_window_ticker_task(
     Ok(())
 }
 
+// CREATE TABLE aggregate_trades (
+//     event_time TIMESTAMPTZ NOT NULL,
+//     symbol TEXT NOT NULL,
+//     aggregate_trade_id NUMERIC NOT NULL,
+//     price DECIMAL(20,8) NOT NULL,
+//     quantity DECIMAL(20,8) NOT NULL,
+//     first_trade_id NUMERIC NOT NULL,
+//     last_trade_id NUMERIC NOT NULL,
+//     trade_time TIMESTAMPTZ NOT NULL,
+//     buyer_market_maker BOOLEAN NOT NULL
+// ) WITH (
+//     tsdb.hypertable,
+//     tsdb.partition_column='event_time',
+//     tsdb.segmentby='symbol',
+//     tsdb.orderby='event_time DESC',
+//     tsdb.chunk_interval='1d'
+// );
+async fn run_agg_trade_task(
+    symbol: String,
+    mut agg_trade_rx: mpsc::UnboundedReceiver<AggregateTrade>,
+) -> Result<()> {
+    let pool = get_db_pool().await;
+    let agg_trade_producer = create_producer("agg_trade", &symbol)
+        .await
+        .context("Failed to create aggregate trade producer")?;
+    info!("Starting aggregate trade task for symbol: {}", symbol);
+
+    while let Some(agg_trade) = agg_trade_rx.recv().await {
+        debug!("Aggregate Trade - {}: {:?}", symbol, agg_trade);
+        // Send to message queue
+        let message = Message::from_str(&serde_json::to_string(&agg_trade)?)
+            .context("Failed to create message from aggregate trade data")?;
+
+        if let Err(e) = agg_trade_producer.send_one(message).await {
+            error!(
+                "Failed to send aggregate trade message for {}: {}",
+                symbol, e
+            );
+            continue;
+        }
+
+        // Insert into database
+        if let Err(e) = sqlx::query!(
+            r"INSERT INTO aggregate_trades (
+                event_time, symbol, aggregate_trade_id, price, quantity,
+                first_trade_id, last_trade_id, trade_time, buyer_market_maker
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            agg_trade.event_time,
+            agg_trade.symbol,
+            Decimal::from(agg_trade.aggregate_trade_id),
+            agg_trade.price,
+            agg_trade.quantity,
+            Decimal::from(agg_trade.first_trade_id),
+            Decimal::from(agg_trade.last_trade_id),
+            agg_trade.trade_time,
+            agg_trade.buyer_market_maker,
+        )
+        .execute(pool)
+        .await
+        {
+            error!("Failed to insert aggregate trade for {}: {}", symbol, e);
+        }
+    }
+
+    info!("Aggregate trade task for {} completed", symbol);
+    Ok(())
+}
+
 async fn run_snapshot_task(
     symbol: String,
     mut snapshot_rx: mpsc::UnboundedReceiver<SnapshotRequest>,
     bc: &BinanceClient,
 ) -> Result<()> {
-    let snapshot_producer = create_producer("BINANCE", "depth_snapshot")
+    let pool = get_db_pool().await;
+    let snapshot_producer = create_producer("depth_snapshot", &symbol)
         .await
         .context("Failed to create snapshot producer")?;
     info!("Starting snapshot task for symbol: {}", symbol);
@@ -297,6 +399,7 @@ async fn run_snapshot_task(
             .context("Failed to get depth snapshot");
 
         if let Ok(snapshot) = &snapshot {
+            debug!("Snapshot for {}: {:?}", req_symbol, snapshot);
             // Send to message queue
             if let Err(e) = snapshot_producer
                 .send_one(
@@ -320,7 +423,7 @@ async fn run_snapshot_task(
                 serde_json::to_value(&snapshot.asks).unwrap(),
                 reason.as_str(),
             )
-            .execute(&*DB_POOL)
+            .execute(pool)
             .await
             {
                 error!("Failed to insert depth snapshot for {}: {}", symbol, e);
@@ -334,52 +437,87 @@ async fn run_snapshot_task(
     Ok(())
 }
 
-async fn run_symbol_producer(bc: Arc<BinanceClient>, symbol: String) -> Result<()> {
+async fn run_symbol_producer(
+    bc: &'static BinanceClient,
+    symbol: String,
+    pool: &PgPool,
+) -> Result<()> {
     info!("Starting producer for symbol: {}", symbol);
-
-    // Create data streams
-    let depth_rx = bc
-        .diff_book_depth(
-            DiffBookDepthParams::builder(symbol.clone())
-                .update_speed("100ms".to_string())
-                .build()?,
-        )
-        .await?;
-
-    let ticker_rx = bc
-        .ticker(TickerParams::builder(symbol.clone()).build()?)
-        .await?;
-
-    let ticker_window_1h_rx = bc
-        .rolling_window_ticker(
-            RollingWindowTickerParams::builder(
-                symbol.clone(),
-                RollingWindowTickerWindowSizeEnum::WindowSize1h,
-            )
-            .build()?,
-        )
-        .await?;
-
     // Create channels
     let (snapshot_request_tx, snapshot_request_rx) = mpsc::unbounded_channel();
     let (depth_for_orderbook_tx, depth_for_orderbook_rx) = mpsc::unbounded_channel();
 
-    // Create order book
+    let symbol_ = symbol.clone();
+    let depth_task = tokio::spawn(async move {
+        let depth_rx = bc
+            .diff_book_depth(
+                DiffBookDepthParams::builder(symbol_.clone())
+                    .update_speed("100ms".to_string())
+                    .build()?,
+            )
+            .await
+            .context("Failed to get depth stream")?;
+
+        run_depth_task(symbol_, depth_rx, depth_for_orderbook_tx).await
+    });
+    let symbol_ = symbol.clone();
+    let ticker_task = tokio::spawn(async move {
+        let ticker_rx = bc
+            .ticker(TickerParams::builder(symbol_.clone()).build()?)
+            .await
+            .context("Failed to get ticker stream")?;
+
+        run_ticker_task(symbol_, ticker_rx).await
+    });
+    let symbol_ = symbol.clone();
+    let ticker_window_task = tokio::spawn(async move {
+        let ticker_window_1h_rx = bc
+            .rolling_window_ticker(
+                RollingWindowTickerParams::builder(
+                    symbol_.clone(),
+                    RollingWindowTickerWindowSizeEnum::WindowSize1h,
+                )
+                .build()?,
+            )
+            .await
+            .context("Failed to get rolling window ticker stream")?;
+
+        run_window_ticker_task(symbol_, ticker_window_1h_rx).await
+    });
+    let symbol_ = symbol.clone();
+    let agg_trade_task = tokio::spawn(async {
+        let agg_trade_rx = bc
+            .agg_trade(AggTradeParams::builder(symbol_.clone()).build()?)
+            .await
+            .context("Failed to get aggregate trade stream")?;
+
+        run_agg_trade_task(symbol_, agg_trade_rx).await
+    });
+    let symbol_ = symbol.clone();
+    let snapshot_task =
+        tokio::spawn(async move { run_snapshot_task(symbol_, snapshot_request_rx, bc).await });
+    let symbol_ = symbol.clone();
     let order_book = OrderBook::new(
-        symbol.clone(),
+        symbol_,
         Some(100),
         depth_for_orderbook_rx,
         snapshot_request_tx,
     )
     .await?;
+    let symbol_ = symbol.clone();
+    let order_book_task = tokio::spawn(async move {
+        order_book.run().await?;
+        info!("Order book task for {} completed", symbol_);
+        Ok::<(), anyhow::Error>(())
+    });
 
     // Spawn all tasks
     let tasks = tokio::try_join!(
-        run_depth_task(symbol.clone(), depth_rx, depth_for_orderbook_tx,),
-        run_ticker_task(symbol.clone(), ticker_rx),
-        run_window_ticker_task(symbol.clone(), ticker_window_1h_rx,),
-        run_snapshot_task(symbol.clone(), snapshot_request_rx, &bc),
-        async move { order_book.run().await }
+        depth_task,
+        ticker_task,
+        ticker_window_task,
+        snapshot_task,
+        order_book_task
     );
 
     match tasks {
@@ -392,17 +530,31 @@ async fn run_symbol_producer(bc: Arc<BinanceClient>, symbol: String) -> Result<(
 
 /// Run producers for multiple symbols concurrently
 pub async fn run_multi_symbol_producer(symbols: Vec<String>) -> Result<()> {
-    // Initialize lazy statics
-    LazyLock::force(&DB_POOL);
-    LazyLock::force(&IGGY_CLIENT);
-    let bc = Arc::new(BinanceClient::new().await);
+    let bc = get_binance_client().await;
+    let pool = get_db_pool().await;
 
     info!("Starting multi-symbol producer for: {:?}", symbols);
 
-    let tasks: Vec<_> = symbols
-        .into_iter()
-        .map(|symbol| tokio::spawn(run_symbol_producer(Arc::clone(&bc), symbol)))
-        .collect();
+    let mut tasks = Vec::with_capacity(symbols.len());
+
+    for (index, symbol) in symbols.into_iter().enumerate() {
+        if index > 0 {
+            let delay_seconds = 5;
+            info!(
+                "Waiting {} seconds before starting producer for {}",
+                delay_seconds, symbol
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(delay_seconds)).await;
+        }
+
+        info!("Starting producer for symbol: {}", symbol);
+        let task = tokio::spawn(run_symbol_producer(bc, symbol.clone(), pool));
+        tasks.push(task);
+
+        info!("Producer spawned for symbol: {}", symbol);
+    }
+
+    info!("All {} symbol producers have been spawned", tasks.len());
 
     // Wait for all tasks to complete
     let results = try_join_all(tasks).await?;
@@ -419,12 +571,12 @@ pub async fn run_multi_symbol_producer(symbols: Vec<String>) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::fmt()
-        .with_env_filter(env::var("RUST_LOG").unwrap_or_else(|_| "warn".to_string()))
+        .with_env_filter(env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()))
         .init();
 
     // Get symbols from environment or use defaults
-    let symbols_str = env::var("SYMBOLS")
-        .unwrap_or_else(|_| "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,DOTUSDT,MAGICUSDT,BTCETH".to_string());
+    let symbols_str =
+        env::var("SYMBOLS").unwrap_or_else(|_| "BTCUSDT,ETHUSDT,MAGICUSDT,ETHBTC".to_string());
     let symbols: Vec<String> = symbols_str
         .split(',')
         .map(|s| s.trim().to_uppercase())

@@ -130,8 +130,6 @@ impl BinanceClient {
         Ok(agg_trade_rx)
     }
 
-    
-
     pub async fn diff_book_depth(
         &self,
         params: DiffBookDepthParams,

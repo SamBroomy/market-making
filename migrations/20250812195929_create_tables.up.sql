@@ -9,10 +9,11 @@ CREATE TABLE depth_updates (
     bids JSONB,
     asks JSONB
 ) WITH (
-   tsdb.hypertable,
-   tsdb.partition_column='event_time',
-   tsdb.segmentby='symbol',
-   tsdb.orderby='event_time DESC'
+    tsdb.hypertable,
+    tsdb.partition_column='event_time',
+    tsdb.segmentby='symbol',
+    tsdb.orderby='event_time DESC',
+    tsdb.chunk_interval='1d'
 );
 
 -- Ticker Data (24hr statistics)
@@ -40,10 +41,11 @@ CREATE TABLE ticker_data (
     last_trade_id NUMERIC NOT NULL,
     trade_count NUMERIC NOT NULL
 ) WITH (
-   tsdb.hypertable,
-   tsdb.partition_column='event_time',
-   tsdb.segmentby='symbol',
-   tsdb.orderby='event_time DESC'
+    tsdb.hypertable,
+    tsdb.partition_column='event_time',
+    tsdb.segmentby='symbol',
+    tsdb.orderby='event_time DESC',
+    tsdb.chunk_interval='1d'
 );
 
 
@@ -67,12 +69,30 @@ CREATE TABLE rolling_window_ticker (
     last_trade_id NUMERIC NOT NULL,
     trade_count NUMERIC NOT NULL
 ) WITH (
-   tsdb.hypertable,
-   tsdb.partition_column='event_time',
-   tsdb.segmentby='symbol,event_type',
-   tsdb.orderby='event_time DESC'
+    tsdb.hypertable,
+    tsdb.partition_column='event_time',
+    tsdb.segmentby='symbol,event_type',
+    tsdb.orderby='event_time DESC',
+    tsdb.chunk_interval='1d'
 );
 
+CREATE TABLE aggregate_trades (
+    event_time TIMESTAMPTZ NOT NULL,
+    symbol TEXT NOT NULL,
+    aggregate_trade_id NUMERIC NOT NULL,
+    price DECIMAL(20,8) NOT NULL,
+    quantity DECIMAL(20,8) NOT NULL,
+    first_trade_id NUMERIC NOT NULL,
+    last_trade_id NUMERIC NOT NULL,
+    trade_time TIMESTAMPTZ NOT NULL,
+    buyer_market_maker BOOLEAN NOT NULL
+) WITH (
+    tsdb.hypertable,
+    tsdb.partition_column='event_time',
+    tsdb.segmentby='symbol',
+    tsdb.orderby='event_time DESC',
+    tsdb.chunk_interval='1d'
+);
 
 -- Depth Snapshots (full order book state)
 CREATE TABLE depth_snapshots (
