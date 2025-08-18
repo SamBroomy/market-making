@@ -216,6 +216,16 @@ impl<Side: IterHalfBook> HalfBook<Side> {
         Side::iter_from_best(&self.price_levels)
     }
 }
+
+impl<'a, Side: IterHalfBook> IntoIterator for &'a HalfBook<Side> {
+    type IntoIter = IterBook<'a>;
+    type Item = (&'a Decimal, &'a Decimal);
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 impl<Side: SideData> HalfBook<Side> {
     #[must_use]
     pub fn best_price(&self) -> Price {

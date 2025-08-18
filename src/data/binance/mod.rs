@@ -1,9 +1,7 @@
 pub mod models;
 pub mod protocol;
 use std::{
-    cell::{LazyCell, OnceCell},
     collections::{BTreeMap, HashMap},
-    env,
     sync::Arc,
 };
 
@@ -13,10 +11,6 @@ use binance_sdk::{
         websocket::{WebsocketBase, WebsocketStreams, create_stream_handler},
     },
     config::{ConfigurationRestApi, ConfigurationWebsocketStreams},
-    constants::{
-        SPOT_REST_API_PROD_URL, SPOT_REST_API_TESTNET_URL, SPOT_WS_STREAMS_PROD_URL,
-        SPOT_WS_STREAMS_TESTNET_URL,
-    },
     models::RestApiResponse,
     spot::{
         rest_api::DepthParams,
@@ -30,26 +24,25 @@ use reqwest;
 use serde_json::json;
 use tokio::sync::mpsc::{UnboundedReceiver as Receiver, unbounded_channel};
 
-use crate::data::binance::models::{DepthUpdate, TickerData, WindowTickerData};
+use crate::{
+    config::Config,
+    data::binance::models::{DepthUpdate, TickerData, WindowTickerData},
+};
 
-struct BinanceUrls {
-    rest_api: String,
-    ws_streams: String,
+pub struct BinanceUrls {
+    pub rest_api: String,
+    pub ws_streams: String,
 }
 
-const SPOT_WS_STREAMS: LazyCell<BinanceUrls> = LazyCell::new(|| {
-    let (stream, api) = if let Ok(testnet) = env::var("testnet")
-        && testnet == "true"
-    {
-        (SPOT_WS_STREAMS_TESTNET_URL, SPOT_REST_API_TESTNET_URL)
-    } else {
-        (SPOT_WS_STREAMS_PROD_URL, SPOT_REST_API_PROD_URL)
-    };
-    BinanceUrls {
-        rest_api: api.to_string(),
-        ws_streams: stream.to_string(),
+impl BinanceUrls {
+    #[must_use]
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            rest_api: config.get_binance_rest_url(),
+            ws_streams: config.get_binance_ws_url(),
+        }
     }
-});
+}
 
 #[derive(Clone)]
 pub struct BinanceClient {
@@ -59,22 +52,17 @@ pub struct BinanceClient {
 
 impl BinanceClient {
     #[must_use]
-    pub async fn new() -> Self {
+    pub async fn new(config: &Config) -> Self {
         const HAS_TIME_UNIT: bool = true;
-        // let client = spot::SpotWsStreams::production(configuration);
-        // let connection = client.connect().await?;
+        let urls = BinanceUrls::from_config(config);
 
         let mut cfg = ConfigurationWebsocketStreams::builder()
             .build()
             .expect("Failed to build WebSocket configuration");
-        cfg.ws_url = Some(SPOT_WS_STREAMS.ws_streams.clone());
+        cfg.ws_url = Some(urls.ws_streams.clone());
         if !HAS_TIME_UNIT {
             cfg.time_unit = None;
         }
-
-        // let websocket_streams_base = WebsocketStreamsBase::new(cfg, vec![]);
-        // websocket_streams_base.clone().connect(streams).await?;
-        // let client = spot::SpotWsStreams::production(configuration);
 
         let ws_streams = WebsocketStreams::new(cfg, vec![]);
         ws_streams
@@ -82,10 +70,11 @@ impl BinanceClient {
             .connect(vec![])
             .await
             .expect("Failed to connect WebSocket streams");
+
         let configuration = ConfigurationRestApi::builder()
             //   .api_key("YOUR_API_KEY")
             //   .api_secret("YOUR_SECRET_KEY")
-            .base_path(SPOT_WS_STREAMS.rest_api.clone())
+            .base_path(urls.rest_api.clone())
             .build()
             .expect("Failed to build REST API configuration");
 

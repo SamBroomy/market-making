@@ -20,11 +20,7 @@ categories = ["Applications", "Financial", "Trading", "Cryptocurrency"]
 
 [[bin]]
 name = "producer"
-path = "src/producer.rs"
-
-[[bin]]
-name = "producer_test"
-path = "src/producer_test.rs"
+path = "src/producer_main.rs"
 
 [[bin]]
 name = "consumer"
@@ -91,7 +87,7 @@ sqlx = { version = "0.8.6", features = [
 
 ] }
 async-trait = "0.1.89"
-clap = { version = "4.5.45", features = ["derive"] }
+clap = { version = "4.5.45", features = ["derive", "env"] }
 config = "0.15.14"
 # reqwest-middleware = "0.4"
 # reqwest-retry = "0.7"
@@ -123,6 +119,8 @@ unreadable_literal = "allow"
 #must_use_candidate = "allow" # --fix fixes this
 return_self_not_must_use = "allow" # --fix does not fix this
 cast_possible_truncation = "allow"
+struct_excessive_bools = "allow"
+match_same_arms = "allow"
 
 # Specific lints to deny (treat as errors)
 dbg_macro = "deny"
