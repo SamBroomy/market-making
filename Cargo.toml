@@ -90,6 +90,9 @@ sqlx = { version = "0.8.6", features = [
     "json",
 
 ] }
+async-trait = "0.1.89"
+clap = { version = "4.5.45", features = ["derive"] }
+config = "0.15.14"
 # reqwest-middleware = "0.4"
 # reqwest-retry = "0.7"
 

@@ -4,8 +4,15 @@ pub type Price = Decimal;
 pub type Size = Decimal;
 pub type Volume = Decimal;
 
-mod book_state;
-mod half_book;
-mod order_book;
+pub mod book_state;
 
-pub use order_book::{OrderBook, SnapshotRequest};
+pub mod half_book;
+pub mod order_book;
+
+// Re-export commonly used types
+pub use book_state::{OrderBookState, ProcessResult};
+pub use order_book::{OrderBook, SnapshotReason, SnapshotRequest};
+
+// Type aliases for convenience
+pub type SnapshotRequestSender = tokio::sync::mpsc::UnboundedSender<SnapshotRequest>;
+pub type SnapshotRequestReceiver = tokio::sync::mpsc::UnboundedReceiver<SnapshotRequest>;

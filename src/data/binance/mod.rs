@@ -1,7 +1,9 @@
 pub mod models;
 pub mod protocol;
 use std::{
+    cell::{LazyCell, OnceCell},
     collections::{BTreeMap, HashMap},
+    env,
     sync::Arc,
 };
 
@@ -11,7 +13,10 @@ use binance_sdk::{
         websocket::{WebsocketBase, WebsocketStreams, create_stream_handler},
     },
     config::{ConfigurationRestApi, ConfigurationWebsocketStreams},
-    constants::{SPOT_REST_API_PROD_URL, SPOT_WS_STREAMS_PROD_URL},
+    constants::{
+        SPOT_REST_API_PROD_URL, SPOT_REST_API_TESTNET_URL, SPOT_WS_STREAMS_PROD_URL,
+        SPOT_WS_STREAMS_TESTNET_URL,
+    },
     models::RestApiResponse,
     spot::{
         rest_api::DepthParams,
@@ -26,6 +31,25 @@ use serde_json::json;
 use tokio::sync::mpsc::{UnboundedReceiver as Receiver, unbounded_channel};
 
 use crate::data::binance::models::{DepthUpdate, TickerData, WindowTickerData};
+
+struct BinanceUrls {
+    rest_api: String,
+    ws_streams: String,
+}
+
+const SPOT_WS_STREAMS: LazyCell<BinanceUrls> = LazyCell::new(|| {
+    let (stream, api) = if let Ok(testnet) = env::var("testnet")
+        && testnet == "true"
+    {
+        (SPOT_WS_STREAMS_TESTNET_URL, SPOT_REST_API_TESTNET_URL)
+    } else {
+        (SPOT_WS_STREAMS_PROD_URL, SPOT_REST_API_PROD_URL)
+    };
+    BinanceUrls {
+        rest_api: api.to_string(),
+        ws_streams: stream.to_string(),
+    }
+});
 
 #[derive(Clone)]
 pub struct BinanceClient {
@@ -43,7 +67,7 @@ impl BinanceClient {
         let mut cfg = ConfigurationWebsocketStreams::builder()
             .build()
             .expect("Failed to build WebSocket configuration");
-        cfg.ws_url = Some(SPOT_WS_STREAMS_PROD_URL.to_string());
+        cfg.ws_url = Some(SPOT_WS_STREAMS.ws_streams.clone());
         if !HAS_TIME_UNIT {
             cfg.time_unit = None;
         }
@@ -61,7 +85,7 @@ impl BinanceClient {
         let configuration = ConfigurationRestApi::builder()
             //   .api_key("YOUR_API_KEY")
             //   .api_secret("YOUR_SECRET_KEY")
-            .base_path(SPOT_REST_API_PROD_URL.to_string())
+            .base_path(SPOT_WS_STREAMS.rest_api.clone())
             .build()
             .expect("Failed to build REST API configuration");
 

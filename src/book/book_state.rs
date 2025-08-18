@@ -1,16 +1,18 @@
 use std::collections::VecDeque;
 
 use anyhow::Result;
+use bincode::{Decode, Encode};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, trace};
 
 use super::Price;
 use crate::{
     book::{
         Volume,
-        half_book::{AskBook, BidBook},
+        half_book::{AskBook, BidBook, PriceLevels},
     },
     data::binance::models::{DepthSnapshot, DepthUpdate},
 };
@@ -180,10 +182,33 @@ impl LastSnapshot {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketDataSummary {
+    pub spread_bps: Decimal,
+    pub mid_price: Decimal,
+    pub quote_imbalance_l1: Decimal, // [0,1] normalized
+    pub quote_imbalance_l5: Decimal, // [0,1] normalized
+    pub weighted_mid: Decimal,
+    pub micro_price: Decimal, // Stoikov's micro-price
+    pub last_update_time: DateTime<Utc>,
+    pub update_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
+pub struct StateSnapshot {
+    #[bincode(with_serde)]
+    pub bids: PriceLevels,
+    #[bincode(with_serde)]
+    pub asks: PriceLevels,
+    pub last_update_id: u64,
+    #[bincode(with_serde)]
+    pub last_update_time: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone)]
 pub struct OrderBookState {
-    bid_depth: BidBook,
-    ask_depth: AskBook,
+    bids: BidBook,
+    asks: AskBook,
     last_snapshot: LastSnapshot,
     last_update_id: u64,
     last_update_time: DateTime<Utc>,
@@ -199,8 +224,8 @@ impl OrderBookState {
         let last_snapshot = LastSnapshot::new(snapshot);
 
         Self {
-            bid_depth,
-            ask_depth,
+            bids: bid_depth,
+            asks: ask_depth,
             last_snapshot,
             last_update_id,
             last_update_time,
@@ -215,11 +240,11 @@ impl OrderBookState {
             ask_levels = snapshot.asks.len(),
             "Applying fresh order book snapshot"
         );
-        self.bid_depth.clear();
-        self.ask_depth.clear();
+        self.bids.clear();
+        self.asks.clear();
 
-        self.bid_depth.apply_snapshot_offers(&snapshot.bids);
-        self.ask_depth.apply_snapshot_offers(&snapshot.asks);
+        self.bids.apply_snapshot_offers(&snapshot.bids);
+        self.asks.apply_snapshot_offers(&snapshot.asks);
         self.last_update_time = Utc::now();
         self.last_update_id = snapshot.last_update_id;
         self.last_snapshot = LastSnapshot::new(snapshot);
@@ -278,8 +303,8 @@ impl OrderBookState {
         }
 
         self.apply_update_changes(update);
-        let current_best_bid = self.bid_depth.best_price();
-        let current_best_ask = self.ask_depth.best_price();
+        let current_best_bid = self.bids.best_price();
+        let current_best_ask = self.asks.best_price();
 
         // Check if we've moved too far from our snapshot bounds
         if self
@@ -339,8 +364,8 @@ impl OrderBookState {
 
         if any_updates_applied {
             // Check if we need a snapshot due to price movement
-            let current_best_bid = self.bid_depth.best_price();
-            let current_best_ask = self.ask_depth.best_price();
+            let current_best_bid = self.bids.best_price();
+            let current_best_ask = self.asks.best_price();
 
             if self
                 .last_snapshot
@@ -356,8 +381,8 @@ impl OrderBookState {
     }
 
     fn apply_update_changes(&mut self, update: &DepthUpdate) {
-        self.bid_depth.apply_changes(&update.bids);
-        self.ask_depth.apply_changes(&update.asks);
+        self.bids.apply_changes(&update.bids);
+        self.asks.apply_changes(&update.asks);
         debug!(
             update_id = update.final_update_id,
             "Applied order book update changes"
@@ -366,9 +391,134 @@ impl OrderBookState {
         self.last_update_time = update.event_time;
     }
 
+    /// Volume-Adjusted Mid-Price (VAMP)
     fn calculate_vamp(&self, volume_cutoff_dolars: Volume) -> Option<Price> {
-        let bid_vwap = self.bid_depth.volume_weighted_price(volume_cutoff_dolars)?;
-        let ask_vwap = self.ask_depth.volume_weighted_price(volume_cutoff_dolars)?;
+        let bid_vwap = self.bids.volume_weighted_price(volume_cutoff_dolars)?;
+        let ask_vwap = self.asks.volume_weighted_price(volume_cutoff_dolars)?;
         Some((bid_vwap + ask_vwap) / dec!(2))
+    }
+
+    #[must_use]
+    pub fn market_data_summary(&self) -> MarketDataSummary {
+        let spread_bps = self.calculate_spread_bps();
+        let mid_price = self.calculate_midprice();
+        let quote_imbalance_l1 = Self::normalize_imbalance(self.calculate_quote_imbalance_n(1));
+        let quote_imbalance_l5 = Self::normalize_imbalance(self.calculate_quote_imbalance_n(5));
+        let weighted_mid = self.calculate_weighted_mid();
+        let micro_price = self.calculate_micro_price(); // Stoikov's formula
+
+        MarketDataSummary {
+            spread_bps,
+            mid_price,
+            quote_imbalance_l1,
+            quote_imbalance_l5,
+            weighted_mid,
+            micro_price,
+            last_update_time: self.last_update_time,
+            update_id: self.last_update_id,
+        }
+    }
+
+    #[must_use]
+    pub fn state_snapshot(&self, limit: Option<i32>) -> StateSnapshot {
+        let limit = limit.map_or(usize::MAX, |l| l as usize);
+
+        let bids: PriceLevels = self
+            .bids
+            .iter()
+            .take(limit)
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        let asks: PriceLevels = self
+            .asks
+            .iter()
+            .take(limit)
+            .map(|(k, v)| (*k, *v))
+            .collect();
+
+        StateSnapshot {
+            bids,
+            asks,
+            last_update_id: self.last_update_id,
+            last_update_time: self.last_update_time,
+        }
+    }
+
+    /// (Pa + Pb) / 2
+    fn calculate_midprice(&self) -> Decimal {
+        let best_bid = self.bids.best_price();
+        let best_ask = self.asks.best_price();
+        (best_ask + best_bid) / dec!(2)
+    }
+
+    /// Qb/(Qb+Qa) - Single level quote imbalance
+    fn calculate_quote_imbalance(&self) -> Decimal {
+        let bid_volume = self.bids.best_quote();
+        let ask_volume = self.asks.best_quote();
+        bid_volume / (bid_volume + ask_volume)
+    }
+
+    /// Pa - Pb
+    fn calculate_spread(&self) -> Decimal {
+        self.asks.best_price() - self.bids.best_price()
+    }
+
+    /// Spread in basis points (more useful)
+    fn calculate_spread_bps(&self) -> Decimal {
+        let spread = self.calculate_spread();
+        let mid_price = self.calculate_midprice();
+        (spread / mid_price) * dec!(10000)
+    }
+
+    /// `P_micro` = M + g(I, S) - Stoikov's micro-price
+    fn calculate_micro_price(&self) -> Decimal {
+        let mid_price = self.calculate_midprice();
+        let quote_imbalance = self.calculate_quote_imbalance();
+        let spread = self.calculate_spread();
+
+        // Stoikov's empirical finding: g(I,S) ≈ (I - 0.5) * S * factor
+        // The factor depends on the asset, typically 0.3-0.7
+        let adjustment_factor = dec!(0.5); // You'll calibrate this per asset
+        let imbalance_adjustment = (quote_imbalance - dec!(0.5)) * spread * adjustment_factor;
+
+        mid_price + imbalance_adjustment
+    }
+
+    /// Weighted mid: I*Pa + (1-I)*Pb
+    fn calculate_weighted_mid(&self) -> Decimal {
+        let quote_imbalance = self.calculate_quote_imbalance();
+        let best_bid = self.bids.best_price();
+        let best_ask = self.asks.best_price();
+
+        (quote_imbalance * best_ask) + ((dec!(1) - quote_imbalance) * best_bid)
+    }
+
+    /// Quote imbalance at 1 level - (Vb - Va) / (Vb + Va)
+    fn quote_imbalance_l1(&self) -> Decimal {
+        let bid_volume = self.bids.best_quote();
+        let ask_volume = self.asks.best_quote();
+
+        if bid_volume + ask_volume == dec!(0) {
+            return dec!(0.0); // Neutral if no volume
+        }
+
+        (bid_volume - ask_volume) / (bid_volume + ask_volume)
+    }
+
+    /// Quote imbalance at N levels - (∑Vb - ∑Va) / (∑Vb + ∑Va)
+    fn calculate_quote_imbalance_n(&self, n: usize) -> Decimal {
+        let bid_volume: Decimal = self.bids.iter().take(n).map(|(_, &size)| size).sum();
+        let ask_volume: Decimal = self.asks.iter().take(n).map(|(_, &size)| size).sum();
+
+        if bid_volume + ask_volume == dec!(0) {
+            return dec!(0.0); // Neutral if no volume
+        }
+
+        (bid_volume - ask_volume) / (bid_volume + ask_volume)
+    }
+
+    /// Convert imbalance from [-1,1] to [0,1] range
+    fn normalize_imbalance(imbalance: Decimal) -> Decimal {
+        (imbalance + dec!(1)) / dec!(2)
     }
 }

@@ -9,6 +9,12 @@
 !**/*.rs
 !examples/
 !benches/
+!.python-version
+!justfile
+!pyproject.toml
+!rust-toolchain.toml
+!rustfmt.toml
+!Cargo.lock
 !notebooks/*.ipynb
 !**/*.ipynb
 !LICENSE

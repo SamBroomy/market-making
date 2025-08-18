@@ -1,18 +1,14 @@
 use std::collections::VecDeque;
 
 use anyhow::Result;
-use tokio::sync::{mpsc, mpsc::UnboundedReceiver as Receiver, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 
-use super::book_state::OrderBookState;
+use super::book_state::{OrderBookState, ProcessResult};
 use crate::{
-    book::book_state::ProcessResult,
     data::binance::models::{DepthSnapshot, DepthUpdate},
+    streaming::{DatabaseWriter, MessageProducer},
 };
-
-pub trait SnapshotProvider: Send + Sync {
-    async fn get_snapshot(&self, symbol: &str, limit: Option<u32>) -> Result<DepthSnapshot>;
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SnapshotReason {
@@ -21,6 +17,7 @@ pub enum SnapshotReason {
 }
 
 impl SnapshotReason {
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Initial => "initial",
@@ -29,7 +26,6 @@ impl SnapshotReason {
     }
 }
 
-// Request/Response types for snapshot channel
 #[derive(Debug)]
 pub struct SnapshotRequest {
     pub symbol: String,
@@ -45,14 +41,6 @@ impl SnapshotRequest {
         limit: Option<i32>,
         reason: SnapshotReason,
     ) -> (Self, oneshot::Receiver<Result<DepthSnapshot>>) {
-        assert!(
-            limit.is_none_or(|l| l > 0),
-            "Limit must be None or greater than 0"
-        );
-        assert!(
-            limit.is_none_or(|l| l <= 5000),
-            "Limit must be None or less than or equal to 5000"
-        );
         let (response_tx, response_rx) = oneshot::channel();
         (
             Self {
@@ -64,31 +52,40 @@ impl SnapshotRequest {
             response_rx,
         )
     }
-
-    pub fn send(self, sender: &SnapshotRequestSender) -> Result<()> {
-        sender
-            .send(self)
-            .map_err(|e| anyhow::anyhow!("Failed to send snapshot request: {}", e))
-    }
 }
 
 pub type SnapshotRequestSender = mpsc::UnboundedSender<SnapshotRequest>;
-pub type SnapshotRequestReceiver = mpsc::UnboundedReceiver<SnapshotRequest>;
 
 pub struct OrderBook {
     symbol: String,
     limit: Option<i32>,
     state: OrderBookState,
-    book_diff_update: Receiver<DepthUpdate>,
+
+    // Input channels
+    book_diff_update: mpsc::UnboundedReceiver<DepthUpdate>,
     snapshot_request_tx: SnapshotRequestSender,
+
+    // Output producers
+    signals_producer: Option<MessageProducer>,
+    state_producer: Option<MessageProducer>,
+    database_writer: Option<DatabaseWriter>,
+
+    // State tracking
+    updates_since_last_signals: u64,
+    updates_since_last_state: u64,
+    last_signals_id: u64,
+    last_state_publish: std::time::Instant,
 }
 
 impl OrderBook {
     pub async fn new(
         symbol: String,
         limit: Option<i32>,
-        mut book_diff_update: Receiver<DepthUpdate>,
+        mut book_diff_update: mpsc::UnboundedReceiver<DepthUpdate>,
         snapshot_request_tx: SnapshotRequestSender,
+        signals_producer: Option<MessageProducer>,
+        state_producer: Option<MessageProducer>,
+        database_writer: Option<DatabaseWriter>,
     ) -> Result<Self> {
         info!(symbol = %symbol, "Initializing order book");
 
@@ -146,69 +143,136 @@ impl OrderBook {
             state,
             book_diff_update,
             snapshot_request_tx,
+            signals_producer,
+            state_producer,
+            database_writer,
+            updates_since_last_signals: 0,
+            updates_since_last_state: 0,
+            last_signals_id: 0,
+            last_state_publish: std::time::Instant::now(),
         })
     }
 
     pub async fn run(mut self) -> Result<()> {
-        info!(symbol = %self.symbol, "Starting order book for {}", self.symbol);
+        info!(symbol = %self.symbol, "Starting  order book");
+
         while let Some(update) = self.book_diff_update.recv().await {
             match self.state.process_update(&update)? {
                 ProcessResult::Updated => {
-                    info!(symbol = %self.symbol, update_id = update.final_update_id,
-                                "Processed update");
+                    info!(symbol = %self.symbol, update_id = update.final_update_id, "Processed update");
+                    // Publish signals and state
+                    if let Some(ref signals_producer) = self.signals_producer {
+                        let summary = self.state.market_data_summary();
+                        if let Err(e) = signals_producer.send_json(&summary).await {
+                            error!("Failed to publish orderbook signals: {}", e);
+                        }
+                    }
+                    // Publish state snapshot if needed
+                    if let Some(ref state_producer) = self.state_producer {
+                        let state = self.state.state_snapshot(self.limit);
+                        if let Err(e) = state_producer.send_json(&state).await {
+                            error!("Failed to publish orderbook state: {}", e);
+                        }
+                    }
+
+                    // Persist to database if configured
+                    if let Some(ref db_writer) = self.database_writer
+                        && let Err(e) = db_writer.write_depth_update(&update).await
+                    {
+                        error!("Failed to write depth update to database: {}", e);
+                    }
                 }
                 ProcessResult::NeedsSnapshot => {
                     info!("Requesting new snapshot for {}", self.symbol);
-
-                    match self.get_snapshot(SnapshotReason::BufferedUpdates).await {
-                        Ok(new_snapshot) => {
-                            info!(
-                                symbol = %self.symbol,
-                                new_update_id = new_snapshot.last_update_id,
-                                "Applying new snapshot"
-                            );
-                            self.state.apply_snapshot(new_snapshot);
-                            let mut buffer = Vec::new();
-                            while let Ok(buffered_update) = self.book_diff_update.try_recv() {
-                                buffer.push(buffered_update);
-                            }
-                            if !buffer.is_empty() {
-                                info!(
-                                    symbol = %self.symbol,
-                                    buffer_size = buffer.len(),
-                                    "Processing {} buffered updates after snapshot",
-                                    buffer.len()
-                                );
-                                let buffer_deque: VecDeque<_> = buffer.into_iter().collect();
-                                let buffer_state = self.state.process_update_buffer(buffer_deque);
-                                // Do we need to handle the result of processing the buffer?
-                                match buffer_state {
-                                    ProcessResult::Updated => {
-                                        info!(symbol = %self.symbol, "Buffered updates processed successfully after snapshot");
-                                    }
-                                    ProcessResult::NeedsSnapshot => {
-                                        warn!(symbol = %self.symbol, "Buffered updates after snapshot require another snapshot");
-                                        let new_snapshot = Self::request_snapshot(
-                                            &self.symbol,
-                                            self.limit,
-                                            &self.snapshot_request_tx,
-                                            SnapshotReason::BufferedUpdates,
-                                        )
-                                        .await?;
-                                        self.state.apply_snapshot(new_snapshot);
-                                    }
-                                    ProcessResult::Stale => {
-                                        info!(symbol = %self.symbol, "No relevant buffered updates after snapshot");
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("Failed to get snapshot: {}", e);
-                        }
-                    }
+                    self.handle_snapshot_request().await?;
                 }
                 ProcessResult::Stale => (),
+            }
+        }
+
+        Ok(())
+    }
+
+    // fn should_publish_state(&self) -> bool {
+    //     // Publish state less frequently or based on significant changes
+    //     self.updates_since_last_state > 10
+    //         || self.significant_book_change()
+    //         || self.last_state_publish.elapsed() > std::time::Duration::from_millis(500)
+    // }
+
+    // fn significant_book_change(&self) -> bool {
+    //     // TODO: Implement logic to detect significant changes
+    //     // For now, just use simple threshold
+    //     self.updates_since_last_state > 5
+    // }
+
+    async fn handle_snapshot_request(&mut self) -> Result<()> {
+        match self.get_snapshot(SnapshotReason::BufferedUpdates).await {
+            Ok(new_snapshot) => {
+                info!(
+                    symbol = %self.symbol,
+                    new_update_id = new_snapshot.last_update_id,
+                    "Applying new snapshot"
+                );
+
+                // Persist snapshot to database if configured
+                if let Some(ref db_writer) = self.database_writer
+                    && let Err(e) = db_writer
+                        .write_depth_snapshot(
+                            &new_snapshot,
+                            &self.symbol,
+                            SnapshotReason::BufferedUpdates.as_str(),
+                        )
+                        .await
+                {
+                    error!("Failed to write snapshot to database: {}", e);
+                }
+
+                self.state.apply_snapshot(new_snapshot);
+
+                // Process any buffered updates
+                self.process_buffered_updates_after_snapshot().await?;
+            }
+            Err(e) => {
+                error!("Failed to get snapshot: {}", e);
+            }
+        }
+        Ok(())
+    }
+
+    async fn process_buffered_updates_after_snapshot(&mut self) -> Result<()> {
+        let mut buffer = Vec::new();
+        while let Ok(buffered_update) = self.book_diff_update.try_recv() {
+            buffer.push(buffered_update);
+        }
+
+        if !buffer.is_empty() {
+            info!(
+                symbol = %self.symbol,
+                buffer_size = buffer.len(),
+                "Processing {} buffered updates after snapshot",
+                buffer.len()
+            );
+
+            let buffer_deque: VecDeque<_> = buffer.into_iter().collect();
+            match self.state.process_update_buffer(buffer_deque) {
+                ProcessResult::Updated => {
+                    info!(symbol = %self.symbol, "Buffered updates processed successfully after snapshot");
+                }
+                ProcessResult::NeedsSnapshot => {
+                    warn!(symbol = %self.symbol, "Buffered updates after snapshot require another snapshot");
+                    let new_snapshot = Self::request_snapshot(
+                        &self.symbol,
+                        self.limit,
+                        &self.snapshot_request_tx,
+                        SnapshotReason::BufferedUpdates,
+                    )
+                    .await?;
+                    self.state.apply_snapshot(new_snapshot);
+                }
+                ProcessResult::Stale => {
+                    info!(symbol = %self.symbol, "No relevant buffered updates after snapshot");
+                }
             }
         }
         Ok(())
@@ -225,7 +289,9 @@ impl OrderBook {
         reason: SnapshotReason,
     ) -> Result<DepthSnapshot> {
         let (request, response_rx) = SnapshotRequest::new(symbol.to_string(), limit, reason);
-        request.send(sender)?;
+        sender
+            .send(request)
+            .map_err(|e| anyhow::anyhow!("Failed to send snapshot request: {}", e))?;
         response_rx.await?
     }
 }

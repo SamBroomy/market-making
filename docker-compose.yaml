@@ -1,67 +1,103 @@
 services:
-  sc:
-    image: infinyon/fluvio:stable
-    container_name: sc
-    hostname: sc
-    networks:
-      - fluvio
+  iggy:
+    #image: apache/iggy:edge
+    image: iggyrs/iggy:latest
+    container_name: iggy
+    restart: unless-stopped
+    environment:
+      - IGGY_ROOT_USERNAME=iggy
+      - IGGY_ROOT_PASSWORD=Secret123!
+      - IGGY_HTTP_ENABLED=true
+      - IGGY_HTTP_ADDRESS=0.0.0.0:80
+      - IGGY_TCP_ENABLED=true
+      - IGGY_TCP_ADDRESS=0.0.0.0:3000
+      - IGGY_QUIC_ENABLED=false
+      - IGGY_HEARTBEAT_ENABLED=true
+      - IGGY_HEARTBEAT_INTERVAL=5s
     ports:
-      - "9103:9003"
-    environment:
-      - RUST_LOG=info
-    command: "./fluvio-run sc --local /fluvio/metadata"
-    volumes:
-      - fluvio-metadata:/fluvio/metadata
-    healthcheck:
-      test: ["CMD", "nc", "-z", "0.0.0.0", "9003"]
-      interval: 1m30s
-      timeout: 10s
-      retries: 3
-      start_period: 1s
-
-  sc-setup:
-    build:
-      context: .
-      dockerfile: Dockerfile.sc-setup
-    container_name: sc-setup
+      - "3010:80"
+      - "5100:3000"
     networks:
-      - fluvio
+      - iggy-network
+    volumes:
+      - iggy:/iggy/local_data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 3000 || exit 1"]
+      start_period: 5s
+      interval: 1s
+      timeout: 1s
+      retries: 2
+
+
+  iggy-web-ui:
+    image: iggyrs/iggy-web-ui:latest
+    container_name: iggy-web-ui
+    restart: unless-stopped
     environment:
-      - RUST_LOG=info
+      - PUBLIC_IGGY_API_URL=http://iggy:80
+    ports:
+      - "3050:3050"
+    networks:
+      - iggy-network
     depends_on:
-      sc:
+      - iggy
+
+
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg17
+    container_name: timescaledb
+    networks:
+      - timescale-network
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=market_data
+    volumes:
+      - timescale-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d market_data"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    networks:
+      - timescale-network
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=pgadmin4@pgadmin.org
+      - PGADMIN_DEFAULT_PASSWORD=admin
+      - POSTGRES_HOST=timescaledb
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=market_data
+      - PGADMIN_CONFIG_SERVER_MODE=False
+      - PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED=False
+    ports:
+      - 5050:80
+    depends_on:
+      timescaledb:
         condition: service_healthy
-
-      # fluvio profile add docker sc:9003 docker;
-      # fluvio cluster spu register --id 5001 -p 0.0.0.0:9110 --private-server spu:9011;
-      # fluvio cluster spu register --id 5001 -p spu:9010 --private-server spu:9011;
-      # Unsure if -l does anything here.
-      # fluvio cluster check;
-      # fluvio cluster status;
-      # exit 0;
-  spu:
-    image: infinyon/fluvio:stable
-    container_name: spu
-    hostname: spu
-    networks:
-      - fluvio
+    user: root
     volumes:
-      - fluvio-data:/fluvio/data
-    environment:
-      - RUST_LOG=info
+      - pgadmin-data:/var/lib/pgadmin
+
+  grafana:
+    image: grafana/grafana-enterprise
+    container_name: grafana
+    restart: unless-stopped
+    networks:
+      - iggy-network
+      - timescale-network
     ports:
-      - "9110:9010"
-      - "9111:9011"
-    command: "./fluvio-run spu -i 5001 -p spu:9010 -v spu:9011 --sc-addr sc:9004 --log-base-dir /fluvio/data"
-    depends_on:
-      sc-setup:
-        condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD", "nc", "-z", "spu", "9010"]
-      interval: 1m30s
-      timeout: 10s
-      retries: 3
-      start_period: 1s
+      - '3000:3000'
+    volumes:
+      - grafana-storage:/var/lib/grafana
+
 
 
   producer:
@@ -70,23 +106,23 @@ services:
       dockerfile: Dockerfile.producer
     container_name: market-making-producer
     networks:
-      - fluvio
+      - iggy-network
+      - timescale-network
     depends_on:
-      sc:
+      timescaledb:
         condition: service_healthy
-      spu:
-        condition: service_healthy
+
     environment:
-      - RUST_LOG=info
-      - SYMBOL=ETHUSDT
+      - RUST_LOG=warn
+      - SYMBOLS=BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,DOTUSDT,DOGEUSDT,MAGICUSDT,ETHBTC
     restart: unless-stopped
-    volumes:
-      - $HOME/.fluvio/config:/usr/.fluvio/config:ro
-
-
-volumes:
-  fluvio-metadata:
-  fluvio-data:
 
 networks:
-  fluvio:
+  iggy-network:
+  timescale-network:
+
+volumes:
+  iggy:
+  timescale-data:
+  pgadmin-data:
+  grafana-storage:

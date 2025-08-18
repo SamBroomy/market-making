@@ -22,7 +22,7 @@ impl fmt::Display for OrderSide {
     }
 }
 
-type PriceLevels = BTreeMap<Price, Size>;
+pub type PriceLevels = BTreeMap<Price, Size>;
 // Marker types to distinguish bid and ask books
 #[derive(Debug, Clone, Default)]
 pub struct BidSide;
@@ -59,6 +59,7 @@ impl IterHalfBook for AskSide {
 pub trait BookSide {
     fn is_bid() -> bool;
     fn is_ask() -> bool;
+    #[must_use]
     fn side() -> OrderSide {
         if Self::is_bid() {
             OrderSide::Bid
@@ -88,24 +89,25 @@ impl BookSide for AskSide {
 
 pub trait SideData: IterHalfBook {
     fn best_price(map: &PriceLevels) -> Price;
-    fn best_size(map: &PriceLevels) -> Size;
+    fn best_quote(map: &PriceLevels) -> Size;
     fn best_offer(map: &PriceLevels) -> OfferData;
+    #[must_use]
     fn volume_weighted_price(map: &PriceLevels, volume_threshold: Volume) -> Option<Price> {
         let mut remaining_volume = volume_threshold;
         let mut total_notional = Decimal::ZERO;
         let mut total_size = Decimal::ZERO;
 
         for (&price, &size) in Self::iter_from_best(map) {
-            let volume = price * size;
-            if volume >= remaining_volume {
+            let notional = price * size;
+            if notional >= remaining_volume {
                 let partial_size = remaining_volume / price;
                 total_notional += price * partial_size;
                 total_size += partial_size;
                 break; // Stop once we reach the cutoff
             }
-            total_notional += volume;
+            total_notional += notional;
             total_size += size;
-            remaining_volume -= volume;
+            remaining_volume -= notional;
         }
         total_notional
             .checked_div(total_size)
@@ -119,7 +121,7 @@ impl SideData for BidSide {
             .expect("Book should not be empty")
     }
 
-    fn best_size(map: &PriceLevels) -> Size {
+    fn best_quote(map: &PriceLevels) -> Size {
         map.last_key_value()
             .map(|(_, size)| *size)
             .expect("Book should not be empty")
@@ -139,7 +141,7 @@ impl SideData for AskSide {
             .expect("Book should not be empty")
     }
 
-    fn best_size(map: &PriceLevels) -> Size {
+    fn best_quote(map: &PriceLevels) -> Size {
         map.first_key_value()
             .map(|(_, size)| *size)
             .expect("Book should not be empty")
@@ -209,29 +211,35 @@ pub type BidBook = HalfBook<BidSide>;
 pub type AskBook = HalfBook<AskSide>;
 
 impl<Side: IterHalfBook> HalfBook<Side> {
+    #[must_use]
     pub fn iter(&self) -> IterBook<'_> {
         Side::iter_from_best(&self.price_levels)
     }
 }
 impl<Side: SideData> HalfBook<Side> {
+    #[must_use]
     pub fn best_price(&self) -> Price {
         Side::best_price(&self.price_levels)
     }
 
-    pub fn best_size(&self) -> Size {
-        Side::best_size(&self.price_levels)
+    #[must_use]
+    pub fn best_quote(&self) -> Size {
+        Side::best_quote(&self.price_levels)
     }
 
+    #[must_use]
     pub fn best_offer(&self) -> OfferData {
         Side::best_offer(&self.price_levels)
     }
 
+    #[must_use]
     pub fn volume_weighted_price(&self, volume_threshold: Volume) -> Option<Price> {
         Side::volume_weighted_price(&self.price_levels, volume_threshold)
     }
 }
 impl<Side: ApplySnapshot> HalfBook<Side> {
     /// If a half book is created from snapshot data then its always assumed the half book is not empty.
+    #[must_use]
     pub fn from_snapshot(snapshot: &[OfferData]) -> Self {
         assert!(
             !snapshot.is_empty(),
@@ -254,6 +262,7 @@ impl<Side: ApplySnapshot> HalfBook<Side> {
     }
 }
 impl<Side: BookSide> HalfBook<Side> {
+    #[must_use]
     pub fn side() -> OrderSide {
         Side::side()
     }
