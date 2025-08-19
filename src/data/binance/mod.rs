@@ -23,26 +23,12 @@ use models::DepthSnapshot;
 use reqwest;
 use serde_json::json;
 use tokio::sync::mpsc::{UnboundedReceiver as Receiver, unbounded_channel};
+use tracing::{error, info, warn};
 
 use crate::{
     config::Config,
     data::binance::models::{DepthUpdate, TickerData, WindowTickerData},
 };
-
-pub struct BinanceUrls {
-    pub rest_api: String,
-    pub ws_streams: String,
-}
-
-impl BinanceUrls {
-    #[must_use]
-    pub fn from_config(config: &Config) -> Self {
-        Self {
-            rest_api: config.get_binance_rest_url(),
-            ws_streams: config.get_binance_ws_url(),
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct BinanceClient {
@@ -54,27 +40,30 @@ impl BinanceClient {
     #[must_use]
     pub async fn new(config: &Config) -> Self {
         const HAS_TIME_UNIT: bool = true;
-        let urls = BinanceUrls::from_config(config);
 
         let mut cfg = ConfigurationWebsocketStreams::builder()
             .build()
             .expect("Failed to build WebSocket configuration");
-        cfg.ws_url = Some(urls.ws_streams.clone());
+        cfg.ws_url = Some(config.get_binance_ws_url().clone());
         if !HAS_TIME_UNIT {
             cfg.time_unit = None;
         }
 
         let ws_streams = WebsocketStreams::new(cfg, vec![]);
-        ws_streams
-            .clone()
-            .connect(vec![])
-            .await
-            .expect("Failed to connect WebSocket streams");
+        match ws_streams.clone().connect(vec![]).await {
+            Ok(()) => {
+                info!("BinanceClient WebSocket connection established successfully");
+            }
+            Err(e) => {
+                error!("Failed to connect WebSocket streams: {e}");
+                panic!("Failed to connect WebSocket streams: {e}");
+            }
+        }
 
         let configuration = ConfigurationRestApi::builder()
             //   .api_key("YOUR_API_KEY")
             //   .api_secret("YOUR_SECRET_KEY")
-            .base_path(urls.rest_api.clone())
+            .base_path(config.get_binance_rest_url().clone())
             .build()
             .expect("Failed to build REST API configuration");
 
@@ -251,5 +240,32 @@ impl BinanceClient {
                 .expect("Failed to send rolling window ticker data");
         });
         Ok(rolling_window_ticker_rx)
+    }
+
+    pub async fn disconnect(&self) -> anyhow::Result<()> {
+        info!("Disconnecting WebSocket streams...");
+
+        // Add timeout to prevent hanging on stubborn connections
+        let disconnect_timeout = std::time::Duration::from_secs(1);
+
+        match tokio::time::timeout(disconnect_timeout, self.ws_streams.disconnect()).await {
+            Ok(Ok(())) => {
+                info!("WebSocket streams disconnected successfully");
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                warn!("WebSocket disconnect error: {} (continuing shutdown)", e);
+                // Don't fail shutdown for WebSocket errors
+                Ok(())
+            }
+            Err(_) => {
+                warn!(
+                    "WebSocket disconnect timed out after {:?} (continuing shutdown)",
+                    disconnect_timeout
+                );
+                // Don't fail shutdown for timeout
+                Ok(())
+            }
+        }
     }
 }

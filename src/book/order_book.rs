@@ -166,12 +166,27 @@ impl OrderBook {
                         if let Err(e) = signals_producer.send_json(&summary).await {
                             error!("Failed to publish orderbook signals: {}", e);
                         }
+                        if let Some(ref db_writer) = self.database_writer
+                            && let Err(e) = db_writer
+                                .write_orderbook_summary(&summary, &self.symbol)
+                                .await
+                        {
+                            error!("Failed to write orderbook summary to database: {}", e);
+                        }
                     }
                     // Publish state snapshot if needed
                     if let Some(ref state_producer) = self.state_producer {
                         let state = self.state.state_snapshot(self.limit);
                         if let Err(e) = state_producer.send_json(&state).await {
                             error!("Failed to publish orderbook state: {}", e);
+                        }
+
+                        // Also persist state snapshot to database for depth chart visualization
+                        if let Some(ref db_writer) = self.database_writer
+                            && let Err(e) =
+                                db_writer.write_orderbook_state(&state, &self.symbol).await
+                        {
+                            error!("Failed to write orderbook state to database: {}", e);
                         }
                     }
 

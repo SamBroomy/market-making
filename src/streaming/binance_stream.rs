@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::Arc};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -16,13 +16,13 @@ pub trait DataHandler<T>: Send + Sync {
 
 /// Combines message queue and database writing
 pub struct DefaultDataHandler {
-    message_producer: MessageProducer,
+    message_producer: Arc<MessageProducer>,
     database_writer: DatabaseWriter,
 }
 
 impl DefaultDataHandler {
     #[must_use]
-    pub fn new(message_producer: MessageProducer, database_writer: DatabaseWriter) -> Self {
+    pub fn new(message_producer: Arc<MessageProducer>, database_writer: DatabaseWriter) -> Self {
         Self {
             message_producer,
             database_writer,

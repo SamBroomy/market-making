@@ -184,13 +184,20 @@ impl LastSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketDataSummary {
+    pub event_time: DateTime<Utc>,
     pub spread_bps: Decimal,
-    pub mid_price: Decimal,
-    pub quote_imbalance_l1: Decimal, // [0,1] normalized
-    pub quote_imbalance_l5: Decimal, // [0,1] normalized
+    pub mid_price: Price,
+    // L1 raw quantities
+    pub bid_volume_l1: Volume,
+    pub ask_volume_l1: Volume,
+    pub quote_imbalance_l1: Decimal, // [0,1] normalized for trading algorithms
+    // L5 raw quantities
+    pub bid_volume_l5: Volume,
+    pub ask_volume_l5: Volume,
+    pub quote_imbalance_l5: Decimal, // [0,1] normalized for trading algorithms
+
     pub weighted_mid: Decimal,
     pub micro_price: Decimal, // Stoikov's micro-price
-    pub last_update_time: DateTime<Utc>,
     pub update_id: u64,
 }
 
@@ -203,6 +210,7 @@ pub struct StateSnapshot {
     pub last_update_id: u64,
     #[bincode(with_serde)]
     pub last_update_time: DateTime<Utc>,
+    pub depth_limit: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -402,37 +410,50 @@ impl OrderBookState {
     pub fn market_data_summary(&self) -> MarketDataSummary {
         let spread_bps = self.calculate_spread_bps();
         let mid_price = self.calculate_midprice();
+
+        // L1 metrics
+        let bid_volume_l1 = self.bids.best_quote();
+        let ask_volume_l1 = self.asks.best_quote();
         let quote_imbalance_l1 = Self::normalize_imbalance(self.calculate_quote_imbalance_n(1));
+
+        // L5 metrics
+        let bid_volume_l5: Decimal = self.bids.iter().take(5).map(|(_, &size)| size).sum();
+        let ask_volume_l5: Decimal = self.asks.iter().take(5).map(|(_, &size)| size).sum();
         let quote_imbalance_l5 = Self::normalize_imbalance(self.calculate_quote_imbalance_n(5));
+
         let weighted_mid = self.calculate_weighted_mid();
-        let micro_price = self.calculate_micro_price(); // Stoikov's formula
+        let micro_price = self.calculate_micro_price();
 
         MarketDataSummary {
+            event_time: self.last_update_time,
             spread_bps,
             mid_price,
+            bid_volume_l1,
+            ask_volume_l1,
             quote_imbalance_l1,
+            bid_volume_l5,
+            ask_volume_l5,
             quote_imbalance_l5,
             weighted_mid,
             micro_price,
-            last_update_time: self.last_update_time,
             update_id: self.last_update_id,
         }
     }
 
     #[must_use]
     pub fn state_snapshot(&self, limit: Option<i32>) -> StateSnapshot {
-        let limit = limit.map_or(usize::MAX, |l| l as usize);
+        let depth_limit = limit.map_or(100, |l| l.min(100));
 
         let bids: PriceLevels = self
             .bids
             .iter()
-            .take(limit)
+            .take(depth_limit as usize)
             .map(|(k, v)| (*k, *v))
             .collect();
         let asks: PriceLevels = self
             .asks
             .iter()
-            .take(limit)
+            .take(depth_limit as usize)
             .map(|(k, v)| (*k, *v))
             .collect();
 
@@ -441,6 +462,7 @@ impl OrderBookState {
             asks,
             last_update_id: self.last_update_id,
             last_update_time: self.last_update_time,
+            depth_limit,
         }
     }
 

@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO orderbook_summary (\n                event_time, symbol, spread_bps, mid_price, bid_volume_l1,\n                ask_volume_l1, quote_imbalance_l1, bid_volume_l5, ask_volume_l5,\n                quote_imbalance_l5, weighted_mid, micro_price, update_id\n            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Text",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Numeric"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "08b05c993fa5f333fff882426011c3e826a3e47868c5e967f20064c530096b5a"
+}

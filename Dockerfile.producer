@@ -28,25 +28,13 @@ COPY .sqlx ./.sqlx
 COPY migrations ./migrations
 RUN cargo build --release --bin producer
 
-# Alpine runtime - much smaller!
 FROM alpine:3.22 AS runtime
 # RUN apk add --no-cache ca-certificates libgcc libssl3 curl bash
 
-# # Install Fluvio CLI
-# RUN curl -fsS https://hub.infinyon.cloud/install/install.sh?ctx=dc | bash
-# ENV PATH="/root/.fluvio/bin:$PATH"
-
 COPY --from=builder /app/target/release/producer /usr/local/bin/producer
+COPY configuration configuration
+ENV MARKET_ENVIRONMENT=production
 
-# # Create startup script
-# RUN printf '#!/bin/sh\n\
-#     echo "Waiting for Fluvio cluster..."\n\
-#     sleep 10\n\
-#     echo "Adding Fluvio profile..."\n\
-#     fluvio profile add docker sc:9003 docker || true\n\
-#     echo "Starting producer..."\n\
-#     exec producer\n' > /start.sh && chmod +x /start.sh
-
-# CMD ["/start.sh"]
+WORKDIR /
 
 CMD ["producer"]

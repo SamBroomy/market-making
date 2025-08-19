@@ -1,0 +1,27 @@
+# Production Configuration - Application Settings Only
+# Infrastructure connections read from environment variables
+
+# Production-optimized settings
+trading:
+  snapshot_limit: 999 # Full depth for production
+  startup_delay_seconds: 10 # Stagger production startups
+  symbols:
+    - "BTCUSDT"
+    - "ETHUSDT"
+    - "SOLUSDT"
+    - "DOTUSDT"
+    - "MAGICUSDT"
+    - "ETHBTC"
+
+binance:
+  use_testnet: false # Production Binance
+
+logging:
+  level: "warn" # Less verbose for production
+
+# Production feature configuration
+features:
+  enable_streaming: true
+  enable_database: true
+  enable_signals: true
+  enable_state: true

@@ -21,6 +21,8 @@
 debug/
 target/
 !Dockerfile*
+!configuration/*.yaml
+!.env.example
 
 !.sqlx/*.json
 !migrations/*.sql

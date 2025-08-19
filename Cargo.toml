@@ -42,10 +42,6 @@ path = "src/consumer_test.rs"
 
 [dependencies]
 anyhow = "1.0"
-binance_spot_connector_rust = { version = "1.3", features = [
-    "enable-hyper",
-    "enable-tokio-tungstenite",
-] }
 binance-sdk = { version = "11.0.0", features = ["spot"] }
 chrono = { version = "0.4", features = ["serde"] }
 either = "1.15"
@@ -54,7 +50,6 @@ rust_decimal = { version = "1.37", features = [
     "maths",
     "serde",
     "serde-with-str",
-
 ] }
 rust_decimal_macros = "1.37"
 serde = { version = "1.0", features = ["derive"] }
@@ -69,14 +64,12 @@ tracing-subscriber = "0.3"
 #     "kv-surrealkv",
 #     "kv-rocksdb",
 # ] }
-hyper = { version = "1.6", features = ["full"] }
+hyper = { version = "1.7", features = ["full"] }
 reqwest = "0.12"
 bincode = { version = "2.0.1", features = ["serde"] }
-fluvio = "0.50.1"
 is-docker = "0.2.0"
-influx_db_client = "0.6.1"
 iggy = "0.6"
-sqlx = { version = "0.8.6", features = [
+sqlx = { version = "0.8.5", features = [
     "runtime-tokio",
     "postgres",
     "tls-rustls",
@@ -84,11 +77,12 @@ sqlx = { version = "0.8.6", features = [
     "macros",
     "rust_decimal",
     "json",
-
 ] }
 async-trait = "0.1.89"
-clap = { version = "4.5.45", features = ["derive", "env"] }
 config = "0.15.14"
+secrecy = { version = "0.10", features = ["serde"] }
+serde-aux = "4.7"
+serde_with = "3.14"
 # reqwest-middleware = "0.4"
 # reqwest-retry = "0.7"
 

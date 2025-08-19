@@ -2,10 +2,13 @@ use anyhow::Result;
 use chrono::Utc;
 use rust_decimal::Decimal;
 use sqlx::PgPool;
-use tracing::error;
+use tracing::{error, info};
 
-use crate::data::binance::models::{
-    AggregateTrade, DepthSnapshot, DepthUpdate, TickerData, WindowTickerData,
+use crate::{
+    book::book_state::{MarketDataSummary, StateSnapshot},
+    data::binance::models::{
+        AggregateTrade, DepthSnapshot, DepthUpdate, TickerData, WindowTickerData,
+    },
 };
 
 /// Reusable database writer for market data
@@ -168,6 +171,68 @@ impl DatabaseWriter {
             );
             return Err(e.into());
         }
+        Ok(())
+    }
+
+    pub async fn write_orderbook_state(&self, state: &StateSnapshot, symbol: &str) -> Result<()> {
+        if let Err(e) = sqlx::query!(
+            r"INSERT INTO orderbook_state (
+                event_time, symbol, bids, asks, last_update_id, depth_limit
+            ) VALUES ($1, $2, $3, $4, $5, $6)",
+            Utc::now(),
+            symbol,
+            serde_json::to_value(&state.bids)?,
+            serde_json::to_value(&state.asks)?,
+            Decimal::from(state.last_update_id),
+            state.depth_limit,
+        )
+        .execute(&self.pool)
+        .await
+        {
+            error!("Failed to insert orderbook state for {}: {}", symbol, e);
+            return Err(e.into());
+        }
+        Ok(())
+    }
+
+    pub async fn write_orderbook_summary(
+        &self,
+        summary: &MarketDataSummary,
+        symbol: &str,
+    ) -> Result<()> {
+        if let Err(e) = sqlx::query!(
+            r"INSERT INTO orderbook_summary (
+                event_time, symbol, spread_bps, mid_price, bid_volume_l1,
+                ask_volume_l1, quote_imbalance_l1, bid_volume_l5, ask_volume_l5,
+                quote_imbalance_l5, weighted_mid, micro_price, update_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+            summary.event_time,
+            symbol,
+            summary.spread_bps,
+            summary.mid_price,
+            summary.bid_volume_l1,
+            summary.ask_volume_l1,
+            summary.quote_imbalance_l1,
+            summary.bid_volume_l5,
+            summary.ask_volume_l5,
+            summary.quote_imbalance_l5,
+            summary.weighted_mid,
+            summary.micro_price,
+            Decimal::from(summary.update_id),
+        )
+        .execute(&self.pool)
+        .await
+        {
+            error!("Failed to insert orderbook summary for {}: {}", symbol, e);
+            return Err(e.into());
+        }
+        Ok(())
+    }
+
+    pub async fn close(&self) -> Result<()> {
+        // Close the database connection pool
+        self.pool.close().await;
+        info!("Database connection pool closed");
         Ok(())
     }
 }

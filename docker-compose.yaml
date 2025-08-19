@@ -1,12 +1,12 @@
 services:
   iggy:
-    #image: apache/iggy:edge
-    image: iggyrs/iggy:latest
+    image: apache/iggy:latest
+    #image: iggyrs/iggy:latest
     container_name: iggy
     restart: unless-stopped
     environment:
-      - IGGY_ROOT_USERNAME=iggy
-      - IGGY_ROOT_PASSWORD=Secret123!
+      - IGGY_ROOT_USERNAME=${IGGY_USERNAME:-iggy}
+      - IGGY_ROOT_PASSWORD=${IGGY_PASSWORD:-Secret123!}
       - IGGY_HTTP_ENABLED=true
       - IGGY_HTTP_ADDRESS=0.0.0.0:80
       - IGGY_TCP_ENABLED=true
@@ -16,17 +16,17 @@ services:
       - IGGY_HEARTBEAT_INTERVAL=5s
     ports:
       - "3010:80"
-      - "5100:3000"
+      - "${IGGY_PORT:-5100}:3000"
     networks:
       - iggy-network
     volumes:
       - iggy:/iggy/local_data
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 3000 || exit 1"]
-      start_period: 5s
-      interval: 1s
-      timeout: 1s
-      retries: 2
+      test: ["CMD-SHELL", "nc -z 0.0.0.0 3000 && nc -z 0.0.0.0 80"]
+      start_period: 10s
+      interval: 5s
+      timeout: 3s
+      retries: 3
 
 
   iggy-web-ui:
@@ -40,7 +40,8 @@ services:
     networks:
       - iggy-network
     depends_on:
-      - iggy
+      iggy:
+        condition: service_healthy
 
 
 
@@ -50,41 +51,41 @@ services:
     networks:
       - timescale-network
     ports:
-      - 5432:5432
+      - "${POSTGRES_PORT:-5432}:5432"
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=market_data
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}
+      - POSTGRES_DB=${POSTGRES_DB:-market_data}
     volumes:
       - timescale-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d market_data"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-market_data}"]
       interval: 10s
       timeout: 5s
       retries: 3
 
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: pgadmin
-    networks:
-      - timescale-network
-    environment:
-      - PGADMIN_DEFAULT_EMAIL=pgadmin4@pgadmin.org
-      - PGADMIN_DEFAULT_PASSWORD=admin
-      - POSTGRES_HOST=timescaledb
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=market_data
-      - PGADMIN_CONFIG_SERVER_MODE=False
-      - PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED=False
-    ports:
-      - 5050:80
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-    user: root
-    volumes:
-      - pgadmin-data:/var/lib/pgadmin
+  # pgadmin:
+  #   image: dpage/pgadmin4:latest
+  #   container_name: pgadmin
+  #   networks:
+  #     - timescale-network
+  #   environment:
+  #     - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL:-pgadmin4@pgadmin.org}
+  #     - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD:-admin}
+  #     - POSTGRES_HOST=timescaledb
+  #     - POSTGRES_USER=${POSTGRES_USER:-postgres}
+  #     - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}
+  #     - POSTGRES_DB=${POSTGRES_DB:-market_data}
+  #     - PGADMIN_CONFIG_SERVER_MODE=False
+  #     - PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED=False
+  #   ports:
+  #     - "${PGADMIN_PORT:-5050}:80"
+  #   depends_on:
+  #     timescaledb:
+  #       condition: service_healthy
+  #   user: root
+  #   volumes:
+  #     - pgadmin-data:/var/lib/pgadmin
 
   grafana:
     image: grafana/grafana-enterprise
@@ -95,8 +96,27 @@ services:
       - timescale-network
     ports:
       - '3000:3000'
+    environment:
+      # Grafana configuration
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+
+      # Database configuration for provisioning
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}
+      - POSTGRES_DB=${POSTGRES_DB:-market_data}
+
+      # Enable provisioning
+      - GF_PROVISIONING_ENABLE=true
     volumes:
       - grafana-storage:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      iggy:
+        condition: service_healthy
 
 
 
@@ -111,11 +131,25 @@ services:
     depends_on:
       timescaledb:
         condition: service_healthy
-
+      iggy:
+        condition: service_healthy
     environment:
-      - RUST_LOG=warn
-      - SYMBOLS=BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,DOTUSDT,DOGEUSDT,MAGICUSDT,ETHBTC
+      # Environment detection for YAML config selection
+      - MARKET_ENVIRONMENT=${MARKET_ENVIRONMENT:-production}
+
+      # Infrastructure configuration (shared with other services)
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}
+      - POSTGRES_DB=${POSTGRES_DB:-market_data}
+      - POSTGRES_PORT=5432
+
+      - IGGY_USERNAME=${IGGY_USERNAME:-iggy}
+      - IGGY_PASSWORD=${IGGY_PASSWORD:-Secret123!}
+      - IGGY_PORT=3000
+
+      # Application config (trading, binance, features) is read from YAML files
     restart: unless-stopped
+
 
 networks:
   iggy-network:
