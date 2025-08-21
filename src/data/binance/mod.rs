@@ -26,8 +26,8 @@ use tokio::sync::mpsc::{UnboundedReceiver as Receiver, unbounded_channel};
 use tracing::{error, info, warn};
 
 use crate::{
-    config::Config,
     data::binance::models::{DepthUpdate, TickerData, WindowTickerData},
+    settings::BinanceSettings,
 };
 
 #[derive(Clone)]
@@ -38,13 +38,13 @@ pub struct BinanceClient {
 
 impl BinanceClient {
     #[must_use]
-    pub async fn new(config: &Config) -> Self {
+    pub async fn new(settings: &BinanceSettings) -> Self {
         const HAS_TIME_UNIT: bool = true;
 
         let mut cfg = ConfigurationWebsocketStreams::builder()
             .build()
             .expect("Failed to build WebSocket configuration");
-        cfg.ws_url = Some(config.get_binance_ws_url().clone());
+        cfg.ws_url = Some(settings.get_ws_url());
         if !HAS_TIME_UNIT {
             cfg.time_unit = None;
         }
@@ -63,7 +63,7 @@ impl BinanceClient {
         let configuration = ConfigurationRestApi::builder()
             //   .api_key("YOUR_API_KEY")
             //   .api_secret("YOUR_SECRET_KEY")
-            .base_path(config.get_binance_rest_url().clone())
+            .base_path(settings.get_rest_url())
             .build()
             .expect("Failed to build REST API configuration");
 

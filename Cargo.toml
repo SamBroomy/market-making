@@ -79,7 +79,7 @@ sqlx = { version = "0.8.5", features = [
     "json",
 ] }
 async-trait = "0.1.89"
-config = "0.15.14"
+config = { version = "0.15.14", features = ["toml"] }
 secrecy = { version = "0.10", features = ["serde"] }
 serde-aux = "4.7"
 serde_with = "3.14"

@@ -1,5 +1,4 @@
 pub mod book;
-pub mod config;
 pub mod data;
 pub mod producer;
 pub mod recent_trades;
@@ -8,5 +7,5 @@ pub mod shutdown;
 pub mod streaming;
 
 // Re-export commonly used items
-pub use config::Config;
+pub use settings::Settings;
 pub use shutdown::ShutdownCoordinator;

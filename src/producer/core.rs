@@ -1,32 +1,35 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use binance_sdk::spot::rest_api::DepthParams;
 use futures_util::future::try_join_all;
 use iggy::{
     client::{Client, SystemClient},
     clients::client::IggyClient,
 };
+use secrecy::ExposeSecret;
 use sqlx::PgPool;
-use tokio::sync::{OnceCell, broadcast, mpsc};
-use tracing::{debug, error, info, warn};
+use tokio::sync::OnceCell;
+use tracing::{error, info, warn};
 
 use crate::{
-    book::order_book::{OrderBook, SnapshotRequest},
-    config::Config,
     data::binance::BinanceClient,
+    settings::{BinanceSettings, Settings},
     shutdown::ShutdownCoordinator,
-    streaming::{DatabaseWriter, MessageProducer, StreamManager},
+    streaming::StreamManager,
 };
 
 // Global singletons for shared resources (DB and Iggy only - not Binance)
 static DB_POOL: OnceCell<PgPool> = OnceCell::const_new();
 static IGGY_CLIENT: OnceCell<IggyClient> = OnceCell::const_new();
 
-async fn get_db_pool(config: &Config) -> &'static PgPool {
+async fn get_db_pool() -> PgPool {
     DB_POOL
         .get_or_init(|| async {
-            let database_url = config.get_database_url();
+            let database_settings = Settings::get_database_settings();
+            let database_url = database_settings
+                .connection_string()
+                .expose_secret()
+                .to_string();
 
             info!("Connecting to TimescaleDB at: {database_url}");
             let pool = PgPool::connect(&database_url)
@@ -43,12 +46,14 @@ async fn get_db_pool(config: &Config) -> &'static PgPool {
             pool
         })
         .await
+        .clone()
 }
 
-async fn get_iggy_client(config: &Config) -> &'static IggyClient {
+async fn get_iggy_client() -> &'static IggyClient {
     IGGY_CLIENT
         .get_or_init(|| async {
-            let iggy_connection = config.get_iggy_connection_string();
+            let iggy_settings = Settings::get_iggy_settings();
+            let iggy_connection = iggy_settings.connection_string();
 
             info!("Connecting to Iggy message queue at: {iggy_connection}");
             let client = IggyClient::from_connection_string(&iggy_connection)
@@ -71,8 +76,8 @@ async fn get_iggy_client(config: &Config) -> &'static IggyClient {
 }
 
 // Create a new BinanceClient instance for each symbol (no more singleton)
-async fn create_binance_client(config: &Config) -> BinanceClient {
-    BinanceClient::new(config).await
+async fn create_binance_client(settings: &BinanceSettings) -> BinanceClient {
+    BinanceClient::new(settings).await
 }
 
 /// Gracefully shutdown all global resources with timeout
@@ -120,243 +125,39 @@ pub async fn shutdown_global_resources() {
     }
 
     info!("Global resource shutdown completed");
-    
+
     // Give a brief moment for any remaining WebSocket cleanup
     tokio::time::sleep(Duration::from_millis(500)).await;
 }
 
-/// Handles snapshot requests for orderbooks with graceful shutdown
-async fn run_snapshot_task(
-    mut snapshot_rx: mpsc::UnboundedReceiver<SnapshotRequest>,
-    bc: BinanceClient, // Now takes ownership instead of static reference
-    database_writer: DatabaseWriter,
-    config: Config,
-    mut shutdown_rx: broadcast::Receiver<()>,
-) -> Result<()> {
-    loop {
-        tokio::select! {
-            // Handle snapshot requests
-            request = snapshot_rx.recv() => {
-                if let Some(SnapshotRequest {
-                        symbol: req_symbol,
-                        limit,
-                        response_tx,
-                        reason,
-                    }) = request {
-                    let snapshot_response = bc
-                        .depth_snapshot(
-                            DepthParams::builder(req_symbol.clone())
-                                .limit(limit)
-                                .build()?,
-                        )
-                        .await?;
-
-                    // Note: Rate limit headers monitoring would be ideal here
-                    // but RestApiResponse may not expose headers directly via binance-sdk
-                    debug!("Snapshot requested for {} (limit: {:?})", req_symbol, limit);
-
-                    let snapshot_result = snapshot_response
-                        .data()
-                        .await
-                        .context("Failed to get depth snapshot");
-
-                    // Persist to database if successful and enabled
-                    if config.get_enable_database()
-                        && let Ok(snapshot) = &snapshot_result
-                        && let Err(e) = database_writer
-                            .write_depth_snapshot(snapshot, &req_symbol, reason.as_str())
-                            .await
-                    {
-                        error!("Failed to write snapshot to database: {}", e);
-                    }
-
-                    // Send response
-                    let _ = response_tx.send(snapshot_result);
-                } else {
-                    info!("Snapshot request channel closed");
-                    break;
-                }
-            }
-            // Handle shutdown signal
-            _ = shutdown_rx.recv() => {
-                info!("Snapshot task received shutdown signal");
-                // Clean shutdown of this task's BinanceClient
-                if let Err(e) = bc.disconnect().await {
-                    warn!("Failed to disconnect snapshot BinanceClient: {}", e);
-                }
-                break;
-            }
-        }
-    }
-
-    info!("Snapshot task completed gracefully");
-    Ok(())
-}
-
-/// Runs all streams and orderbook for a single symbol with graceful shutdown
-pub async fn run_symbol_producer(
-    symbol: String,
-    config: &Config,
-    shutdown_coordinator: &ShutdownCoordinator,
-) -> Result<()> {
-    info!(
-        "Starting producer for symbol: {} (snapshot limit: {})",
-        symbol,
-        config.get_snapshot_limit()
-    );
-
-    // Create per-symbol BinanceClient instance (no more singleton)
-    let bc = create_binance_client(config).await;
-    let iggy_client = get_iggy_client(config).await;
-    let pool = get_db_pool(config).await.clone();
-    let database_writer = DatabaseWriter::new(pool.clone());
-
-    // Create channels for orderbook communication
-    let (snapshot_request_tx, snapshot_request_rx) = mpsc::unbounded_channel();
-    let (depth_for_orderbook_tx, depth_for_orderbook_rx) = mpsc::unbounded_channel();
-
-    // Create message producers for orderbook signals and state (if enabled)
-    let signals_producer = if config.get_enable_signals() && config.get_enable_streaming() {
-        Some(MessageProducer::new(iggy_client, "orderbook_signals", &symbol, 1).await?)
-    } else {
-        None
-    };
-
-    let state_producer = if config.get_enable_state() && config.get_enable_streaming() {
-        Some(MessageProducer::new(iggy_client, "orderbook_state", &symbol, 1).await?)
-    } else {
-        None
-    };
-
-    // Start snapshot task with shutdown handling - needs a separate BinanceClient instance
-    let bc_for_snapshots = create_binance_client(config).await;
-    let config_clone = config.clone();
-    let snapshot_shutdown_rx = shutdown_coordinator.subscribe();
-    let snapshot_task = tokio::spawn(run_snapshot_task(
-        snapshot_request_rx,
-        bc_for_snapshots,
-        database_writer.clone(),
-        config_clone,
-        snapshot_shutdown_rx,
-    ));
-
-    // Clone symbol for use in tasks
-    let symbol_for_streams = symbol.clone();
-    let symbol_for_orderbook = symbol.clone();
-
-    // Start all market data streams (ticker, trades, etc.) with its own BinanceClient
-    let stream_manager = StreamManager::new(symbol.clone(), iggy_client, pool, bc).await?;
-    let mut streams_shutdown_rx = shutdown_coordinator.subscribe();
-    let streams_task = tokio::spawn(async move {
-        tokio::select! {
-            result = stream_manager.start_all_streams(Some(depth_for_orderbook_tx)) => {
-                result
-            }
-            _ = streams_shutdown_rx.recv() => {
-                info!("Stream manager received shutdown signal for {}", symbol_for_streams);
-                // Properly shutdown the stream manager and close WebSocket connections
-                stream_manager.shutdown().await
-            }
-        }
-    });
-    // Allow some time for streams to initialize and receive a few depth updates before starting orderbook
-    tokio::time::sleep(Duration::from_secs(1)).await;
-
-    // Start enhanced orderbook with configurable snapshot limit
-    let orderbook = OrderBook::new(
-        symbol.clone(),
-        Some(config.get_snapshot_limit()),
-        depth_for_orderbook_rx,
-        snapshot_request_tx,
-        signals_producer,
-        state_producer,
-        if config.get_enable_database() {
-            Some(database_writer)
-        } else {
-            None
-        },
-    )
-    .await?;
-
-    let mut orderbook_shutdown_rx = shutdown_coordinator.subscribe();
-    let orderbook_task = tokio::spawn(async move {
-        tokio::select! {
-            result = orderbook.run() => {
-                result
-            }
-            _ = orderbook_shutdown_rx.recv() => {
-                info!("OrderBook received shutdown signal for {}", symbol_for_orderbook);
-                Ok(())
-            }
-        }
-    });
-
-    // Wait for all tasks or shutdown signal
-    let mut main_shutdown_rx = shutdown_coordinator.subscribe();
-    let tasks = [snapshot_task, streams_task, orderbook_task];
-
-    tokio::select! {
-        results = try_join_all(tasks) => {
-            match results {
-                Ok(task_results) => {
-                    // Check individual task results
-                    for (i, result) in task_results.into_iter().enumerate() {
-                        match result {
-                            Ok(()) => info!("Task {} for {} completed successfully", i, symbol),
-                            Err(e) => error!("Task {} for {} failed: {}", i, symbol, e),
-                        }
-                    }
-                    info!("All tasks for {} completed", symbol);
-                }
-                Err(e) => {
-                    error!("Task join error for {}: {}", symbol, e);
-                    return Err(e.into());
-                }
-            }
-        }
-        _ = main_shutdown_rx.recv() => {
-            info!("Symbol producer for {} received shutdown signal", symbol);
-            info!("Tasks for {} will shut down via their individual shutdown signals", symbol);
-        }
-    }
-
-    info!("Producer for {} finished", symbol);
-    Ok(())
-}
-
 /// Run producers for multiple symbols concurrently with graceful shutdown
 pub async fn run_multi_symbol_producer(
-    symbols: Vec<String>,
-    config: &Config,
-    shutdown_coordinator: &ShutdownCoordinator,
+    settings: Settings,
+    shutdown_coordinator: ShutdownCoordinator,
 ) -> Result<()> {
-    info!("Starting multi-symbol producer for: {:?}", symbols);
-    info!(
-        "Configuration: snapshot_limit={}, startup_delay={}s, shutdown_timeout={}s",
-        config.get_snapshot_limit(),
-        config.get_startup_delay().as_secs(),
-        30 // Default shutdown timeout
-    );
+    let symbol_configs = settings.trading.get_symbol_configs();
 
-    let mut tasks = Vec::with_capacity(symbols.len());
+    let mut tasks = Vec::with_capacity(symbol_configs.len());
+    let binance_settings = settings.binance;
 
-    for (index, symbol) in symbols.into_iter().enumerate() {
-        // Check for shutdown before starting new symbols
+    for (index, symbol_cfg) in symbol_configs.into_iter().enumerate() {
+        // check for shutdown before starting new symbols
         if shutdown_coordinator.is_shutting_down() {
             info!("Shutdown detected, not starting remaining symbols");
             break;
         }
+        let symbol = &symbol_cfg.symbol.clone();
 
-        // Stagger startup to avoid overwhelming services with configurable delay
+        // stagger startup to avoid overwhelming services with configurable delay
         if index > 0 {
-            let delay = config.get_startup_delay();
+            let delay = binance_settings.get_startup_delay();
             info!(
                 "Waiting {}s before starting producer for {} (rate limiting)",
                 delay.as_secs(),
                 symbol
             );
 
-            // Use select to allow shutdown during startup delay
+            // allow shutdown during startup delay
             let mut delay_shutdown_rx = shutdown_coordinator.subscribe();
             tokio::select! {
                 () = tokio::time::sleep(delay) => {},
@@ -367,13 +168,25 @@ pub async fn run_multi_symbol_producer(
             }
         }
 
-        info!("Starting producer for symbol: {}", symbol);
-        let symbol_clone = symbol.clone();
-        let config_clone = config.clone();
-        let shutdown_coordinator_clone = shutdown_coordinator.clone();
-
+        info!("Starting producer for symbol: {}", symbol_cfg.symbol);
+        let shutdown_coordinator_ = shutdown_coordinator.clone();
+        let symbol_ = symbol.clone();
         let task = tokio::spawn(async move {
-            run_symbol_producer(symbol_clone, &config_clone, &shutdown_coordinator_clone).await
+            // Create a new BinanceClient for this symbol
+            let binance_client = create_binance_client(&binance_settings.clone()).await;
+
+            // Start all streams with built-in shutdown handling
+            StreamManager::run(
+                symbol_cfg,
+                binance_settings,
+                get_iggy_client().await,
+                get_db_pool().await,
+                shutdown_coordinator_,
+            )
+            .await?;
+
+            info!("Producer for {} finished", symbol_);
+            Ok(())
         });
         tasks.push(task);
     }

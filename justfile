@@ -11,14 +11,17 @@ up:
     @echo "🚀 Starting market making system..."
     docker compose up --build --force-recreate
 
+infra-up:
+    @echo "🚀 Starting infrastructure services..."
+    docker compose --profile infra up -d
+
+local: infra-up
+    cargo run --bin producer
+
 # ================================
 # Infrastructure Commands
 # ================================
 
-# Start all infrastructure services (database, message queue, monitoring)
-infra-up:
-    @echo "🚀 Starting infrastructure services..."
-    docker compose up --build -d timescaledb iggy iggy-web-ui pgadmin grafana
 
 # Stop all infrastructure services
 infra-down:

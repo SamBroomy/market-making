@@ -1,21 +1,14 @@
 # Base Application Configuration - Business Logic Only
 # Infrastructure details (database, iggy) are read from environment variables
 
-# Trading configuration
+# Advanced Trading Configuration - Per-Symbol Stream Control
 trading:
+  # Symbol-specific configurations
   symbols:
-    - "BTCUSDT"
-    - "ETHUSDT"
-    - "ETHBTC"
-  snapshot_limit: 999
-  state_stream_depth: 50
-  startup_delay_seconds: 10
-
-trading:
-  symbols:
+    # Major pairs - full market data with high-resolution orderbook
     BTCUSDT:
       streams:
-        orderbook: # Needs depth stream and snapshots tasks.
+        orderbook:
           snapshot_limit: 999
           state_stream_depth: 50
           update_speed: "100ms"
@@ -23,34 +16,34 @@ trading:
         window:
           rolling_window_size: "1h"
         agg_trade:
-      persist: false
-      message_que: true
+      persist: true
+      message_queue: true
+
     ETHUSDT:
-    DOTUSTD:
       streams:
+        orderbook:
+          snapshot_limit: 999
+          state_stream_depth: 50
+          update_speed: "100ms"
         ticker:
+        window:
+          rolling_window_size: "1h"
+        agg_trade:
+      persist: true
+      message_queue: true
+    LINKUSDT:
 
-  startup_delay_seconds: 10
-
-
-
-
-
-
-
-
+  # Global defaults - applied when symbol configs don't specify values
+  defaults:
+    snapshot_limit: 100
+    state_stream_depth: 25
+    update_speed: "100ms"
+    rolling_window_size: "1d"
 
 # Binance API configuration
 binance:
-  use_testnet: false
-  update_speed: "100ms"
-
-# Feature toggles
-features:
-  enable_streaming: true
-  enable_database: true
-  enable_signals: true
-  enable_state: true
+  use_testnet: true
+  startup_delay_seconds: 5
 
 # Logging configuration
 logging:

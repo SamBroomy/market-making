@@ -1,19 +1,5 @@
 # Development Environment Configuration - Application Settings Only
 # Infrastructure connections read from environment variables
 
-# Development-specific overrides
-trading:
-  snapshot_limit: 100
-  startup_delay_seconds: 5
-
-binance:
-  use_testnet: true
-
 logging:
   level: "debug"
-
-features:
-  enable_streaming: true
-  enable_database: true
-  enable_signals: true
-  enable_state: true

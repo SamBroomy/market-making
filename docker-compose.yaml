@@ -27,6 +27,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 3
+    profiles: ["infra"]
+
 
 
   iggy-web-ui:
@@ -63,6 +65,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    restart: unless-stopped
+    profiles: ["infra"]
 
   # pgadmin:
   #   image: dpage/pgadmin4:latest

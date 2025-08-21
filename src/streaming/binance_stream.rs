@@ -1,4 +1,4 @@
-use std::{fmt::Debug, sync::Arc};
+use std::fmt::Debug;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -14,15 +14,18 @@ pub trait DataHandler<T>: Send + Sync {
     async fn handle_data(&self, data: &T) -> Result<()>;
 }
 
-/// Combines message queue and database writing
+/// Combines message queue and database writing (both optional)
 pub struct DefaultDataHandler {
-    message_producer: Arc<MessageProducer>,
-    database_writer: DatabaseWriter,
+    message_producer: Option<MessageProducer>,
+    database_writer: Option<DatabaseWriter>,
 }
 
 impl DefaultDataHandler {
     #[must_use]
-    pub fn new(message_producer: Arc<MessageProducer>, database_writer: DatabaseWriter) -> Self {
+    pub fn new(
+        message_producer: Option<MessageProducer>,
+        database_writer: Option<DatabaseWriter>,
+    ) -> Self {
         Self {
             message_producer,
             database_writer,
@@ -42,10 +45,14 @@ where
     T: Serialize + Debug + Send + 'static,
 {
     #[must_use]
-    pub fn new(symbol: String, stream_name: String, handler: Box<dyn DataHandler<T>>) -> Self {
+    pub fn new(
+        symbol: impl Into<String>,
+        stream_name: impl Into<String>,
+        handler: Box<dyn DataHandler<T>>,
+    ) -> Self {
         Self {
-            symbol,
-            stream_name,
+            symbol: symbol.into(),
+            stream_name: stream_name.into(),
             handler,
         }
     }
@@ -78,11 +85,15 @@ macro_rules! impl_data_handler {
         #[async_trait]
         impl DataHandler<$data_type> for DefaultDataHandler {
             async fn handle_data(&self, data: &$data_type) -> Result<()> {
-                // Send to message queue
-                self.message_producer.send_json(data).await?;
+                // Send to message queue if enabled
+                if let Some(ref producer) = self.message_producer {
+                    producer.send_json(data).await?;
+                }
 
-                // Write to database
-                self.database_writer.$db_method(data).await?;
+                // Write to database if enabled
+                if let Some(ref writer) = self.database_writer {
+                    writer.$db_method(data).await?;
+                }
 
                 Ok(())
             }
