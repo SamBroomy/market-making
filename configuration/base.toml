@@ -1,0 +1,24 @@
+
+[binance]
+use_testnet = true
+startup_delay_seconds = 5
+
+
+[logging]
+level = "warn"
+
+[trading.market.BTCUSDT]
+persist = true
+message_queue = true
+orderbook = { snapshot_limit = 999, state_stream_depth = 50, update_speed = "1000ms" }
+ticker = true
+window = { rolling_window_size = "1h" }
+agg_trade = true
+
+[trading.market.ETHUSDT]
+persist = true
+message_queue = true
+orderbook = { snapshot_limit = 999, state_stream_depth = 50, update_speed = "100ms" }
+ticker = true
+window = { rolling_window_size = "1h" }
+agg_trade = true

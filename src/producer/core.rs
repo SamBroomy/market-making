@@ -75,7 +75,7 @@ async fn get_iggy_client() -> &'static IggyClient {
         .await
 }
 
-// Create a new BinanceClient instance for each symbol (no more singleton)
+// Create a new BinanceClient instance for each pair
 async fn create_binance_client(settings: &BinanceSettings) -> BinanceClient {
     BinanceClient::new(settings).await
 }
@@ -130,23 +130,23 @@ pub async fn shutdown_global_resources() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 }
 
-/// Run producers for multiple symbols concurrently with graceful shutdown
-pub async fn run_multi_symbol_producer(
+/// Run producers for multiple market pairs concurrently with graceful shutdown
+pub async fn run_multi_market_producer(
     settings: Settings,
     shutdown_coordinator: ShutdownCoordinator,
 ) -> Result<()> {
-    let symbol_configs = settings.trading.get_symbol_configs();
+    let pair_configs = settings.trading.get_pair_configs();
 
-    let mut tasks = Vec::with_capacity(symbol_configs.len());
+    let mut tasks = Vec::with_capacity(pair_configs.len());
     let binance_settings = settings.binance;
 
-    for (index, symbol_cfg) in symbol_configs.into_iter().enumerate() {
-        // check for shutdown before starting new symbols
+    for (index, pair_cfg) in pair_configs.into_iter().enumerate() {
+        // check for shutdown before starting new pairs
         if shutdown_coordinator.is_shutting_down() {
-            info!("Shutdown detected, not starting remaining symbols");
+            info!("Shutdown detected, not starting remaining pairs");
             break;
         }
-        let symbol = &symbol_cfg.symbol.clone();
+        let symbol = &pair_cfg.symbol.clone();
 
         // stagger startup to avoid overwhelming services with configurable delay
         if index > 0 {
@@ -168,16 +168,16 @@ pub async fn run_multi_symbol_producer(
             }
         }
 
-        info!("Starting producer for symbol: {}", symbol_cfg.symbol);
+        info!("Starting producer for symbol: {}", &symbol);
         let shutdown_coordinator_ = shutdown_coordinator.clone();
         let symbol_ = symbol.clone();
         let task = tokio::spawn(async move {
-            // Create a new BinanceClient for this symbol
+            // Create a new BinanceClient for this pair
             let binance_client = create_binance_client(&binance_settings.clone()).await;
 
             // Start all streams with built-in shutdown handling
             StreamManager::run(
-                symbol_cfg,
+                pair_cfg,
                 binance_settings,
                 get_iggy_client().await,
                 get_db_pool().await,
@@ -191,7 +191,10 @@ pub async fn run_multi_symbol_producer(
         tasks.push(task);
     }
 
-    info!("All {} symbol producers have been spawned", tasks.len());
+    info!(
+        "All {} market pairs producers have been spawned",
+        tasks.len()
+    );
 
     // Wait for all tasks to complete or shutdown signal
     let mut main_shutdown_rx = shutdown_coordinator.subscribe();
@@ -204,18 +207,18 @@ pub async fn run_multi_symbol_producer(
                     let mut errors = Vec::new();
                     for (i, result) in task_results.into_iter().enumerate() {
                         match result {
-                            Ok(()) => info!("Symbol producer {} completed successfully", i),
+                            Ok(()) => info!("Pair producer {} completed successfully", i),
                             Err(e) => {
-                                error!("Symbol producer {} failed: {}", i, e);
+                                error!("Pair producer {} failed: {}", i, e);
                                 errors.push(e);
                             }
                         }
                     }
 
                     if errors.is_empty() {
-                        info!("All symbol producers completed successfully");
+                        info!("All pair producers completed successfully");
                     } else {
-                        error!("{} symbol producers failed", errors.len());
+                        error!("{} pair producers failed", errors.len());
                         return Err(errors.into_iter().next().unwrap());
                     }
                 }
@@ -226,11 +229,11 @@ pub async fn run_multi_symbol_producer(
             }
         }
         _ = main_shutdown_rx.recv() => {
-            info!("Multi-symbol producer received shutdown signal");
-            info!("Symbol producers will shut down via their individual shutdown signals");
+            info!("Multi-pair producer received shutdown signal");
+            info!("Pair producers will shut down via their individual shutdown signals");
         }
     }
 
-    info!("Multi-symbol producer finished");
+    info!("Multi-pair producer finished");
     Ok(())
 }

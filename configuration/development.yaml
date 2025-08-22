@@ -1,5 +1,0 @@
-# Development Environment Configuration - Application Settings Only
-# Infrastructure connections read from environment variables
-
-logging:
-  level: "debug"

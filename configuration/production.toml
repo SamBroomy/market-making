@@ -1,0 +1,59 @@
+[binance]
+use_testnet = false
+startup_delay_seconds = 15
+
+[trading.market.BTCUSDT]
+persist = true
+message_queue = true
+orderbook = { snapshot_limit = 5000, state_stream_depth = 100, update_speed = "100ms" }
+ticker = true
+agg_trade = true
+window = false
+
+[trading.market.ETHUSDT]
+persist = true
+message_queue = true
+orderbook = { snapshot_limit = 5000, state_stream_depth = 100, update_speed = "100ms" }
+ticker = true
+agg_trade = true
+window = false
+
+[trading.market.LINKUSDT]
+persist = true
+message_queue = true
+orderbook = { snapshot_limit = 5000, state_stream_depth = 100, update_speed = "100ms" }
+ticker = true
+agg_trade = true
+window = false
+
+[trading.market.SOLUSDT]
+persist = true
+message_queue = true
+orderbook = { snapshot_limit = 5000, state_stream_depth = 100, update_speed = "100ms" }
+ticker = true
+agg_trade = true
+window = false
+
+[trading.market.DOTUSDT]
+persist = true
+message_queue = true
+orderbook = { snapshot_limit = 5000, state_stream_depth = 100, update_speed = "100ms" }
+ticker = true
+agg_trade = true
+window = false
+
+[trading.market.MAGICUSDT]
+persist = true
+message_queue = true
+orderbook = { snapshot_limit = 5000, state_stream_depth = 100, update_speed = "100ms" }
+ticker = true
+agg_trade = true
+window = false
+
+[trading.market.ETHBTC]
+persist = true
+message_queue = true
+orderbook = { snapshot_limit = 1000, state_stream_depth = 100, update_speed = "100ms" }
+ticker = true
+agg_trade = true
+window = false

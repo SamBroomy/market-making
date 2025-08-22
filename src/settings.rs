@@ -4,7 +4,7 @@ use std::{collections::HashMap, sync::OnceLock};
 use binance_sdk::spot::websocket_streams::RollingWindowTickerWindowSizeEnum;
 use config::{Config, ConfigError, Environment, File};
 use secrecy::{ExposeSecret, SecretString};
-use serde::{Deserialize, Deserializer, de::IntoDeserializer};
+use serde::Deserialize;
 use serde_aux::field_attributes::deserialize_number_from_string;
 
 /// Environment for the application
@@ -149,6 +149,17 @@ impl BinanceSettings {
     }
 }
 
+macro_rules! impl_stream_config {
+    ($config_enum:ident, $settings_struct:ident) => {
+        #[derive(Debug, Clone, Deserialize)]
+        #[serde(untagged)]
+        enum $config_enum {
+            Config($settings_struct),
+            Enabled(bool),
+        }
+    };
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Default)]
 pub enum OrderBookUpdateSpeed {
     #[default]
@@ -177,18 +188,27 @@ impl fmt::Display for OrderBookUpdateSpeed {
         }
     }
 }
-
 /// Stream configuration for orderbook/depth data
 #[derive(Debug, Clone, Deserialize)]
-pub struct OrderbookStreamConfig {
-    pub snapshot_limit: Option<i32>,
-    pub state_stream_depth: Option<i32>,
-    pub update_speed: Option<OrderBookUpdateSpeed>,
+struct OrderbookStreamSettingsRaw {
+    pub snapshot_limit: i32,
+    pub state_stream_depth: i32,
+    pub update_speed: OrderBookUpdateSpeed,
+}
+
+impl Default for OrderbookStreamSettingsRaw {
+    fn default() -> Self {
+        Self {
+            snapshot_limit: 999,
+            state_stream_depth: 100,
+            update_speed: OrderBookUpdateSpeed::default(),
+        }
+    }
 }
 
 /// Stream configuration for ticker data
 #[derive(Debug, Clone, Deserialize, Default)]
-pub struct TickerStreamConfig;
+struct TickerStreamSettingsRaw;
 
 #[derive(Debug, Clone, Copy, Deserialize, Default)]
 pub enum RollingWindowSize {
@@ -232,147 +252,54 @@ impl From<RollingWindowSize> for RollingWindowTickerWindowSizeEnum {
     }
 }
 /// Stream configuration for rolling window ticker data
-#[derive(Debug, Clone, Deserialize)]
-pub struct WindowStreamConfig {
-    pub rolling_window_size: Option<RollingWindowSize>,
+#[derive(Debug, Clone, Deserialize, Default)]
+struct WindowStreamSettingsRaw {
+    pub rolling_window_size: RollingWindowSize,
 }
 
 /// Stream configuration for aggregate trade data
 #[derive(Debug, Clone, Deserialize, Default)]
-pub struct AggTradeStreamConfig;
+struct AggTradeStreamSettingsRaw;
 
-fn deserialize_optional_unit<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Default + Deserialize<'de>,
-{
-    use std::fmt;
-
-    use serde::de::{Error, Visitor};
-
-    struct OptionalUnitVisitor<T>(std::marker::PhantomData<T>);
-
-    impl<'de, T> Visitor<'de> for OptionalUnitVisitor<T>
-    where
-        T: Default + Deserialize<'de>,
-    {
-        type Value = Option<T>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("null, a valid value, or nothing")
-        }
-
-        fn visit_none<E>(self) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-
-        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            T::deserialize(deserializer).map(Some)
-        }
-
-        fn visit_unit<E>(self) -> Result<Self::Value, E> {
-            Ok(Some(T::default()))
-        }
-
-        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            if v.is_empty() {
-                Ok(Some(T::default()))
-            } else {
-                Err(E::custom(format!(
-                    "Expected empty string or null, got: {}",
-                    v
-                )))
-            }
-        }
-    }
-
-    deserializer.deserialize_option(OptionalUnitVisitor(std::marker::PhantomData))
-}
-
-/// Container for all stream configurations
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
-pub struct StreamConfigs {
-    pub orderbook: Option<OrderbookStreamConfig>,
-    pub ticker: TickerStreamConfig,
-    pub window: Option<WindowStreamConfig>,
-    pub agg_trade: AggTradeStreamConfig,
-}
+// Now use the macro to generate the enums and impls
+impl_stream_config!(OrderbookStreamConfig, OrderbookStreamSettingsRaw);
+impl_stream_config!(TickerStreamConfig, TickerStreamSettingsRaw);
+impl_stream_config!(WindowStreamConfig, WindowStreamSettingsRaw);
+impl_stream_config!(AggTradeStreamConfig, AggTradeStreamSettingsRaw);
 
 /// Helper function for default true values
 fn default_true() -> bool {
     true
 }
 
-/// Configuration for a single trading symbol
+/// Configuration for a single trading pair
 #[derive(Debug, Clone, Deserialize)]
-pub struct SymbolTradingConfig {
-    pub streams: Option<StreamConfigs>,
+struct TradingPairConfig {
     #[serde(default = "default_true")]
     pub persist: bool,
     #[serde(default = "default_true")]
     pub message_queue: bool,
-}
-impl Default for SymbolTradingConfig {
-    fn default() -> Self {
-        Self {
-            streams: None,
-            persist: true,
-            message_queue: true,
-        }
-    }
-}
 
-fn default_snapshot_limit() -> i32 {
-    100 // Default snapshot limit
-}
-fn default_state_stream_depth() -> i32 {
-    25 // Default state stream depth
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct StreamDefaults {
-    #[serde(default = "default_snapshot_limit")]
-    pub snapshot_limit: i32,
-    #[serde(default = "default_state_stream_depth")]
-    pub state_stream_depth: i32,
-    pub update_speed: OrderBookUpdateSpeed,
-    pub rolling_window_size: RollingWindowSize,
-}
-
-impl Default for StreamDefaults {
-    fn default() -> Self {
-        Self {
-            snapshot_limit: default_snapshot_limit(),
-            state_stream_depth: default_state_stream_depth(),
-            update_speed: OrderBookUpdateSpeed::HundredMs,
-            rolling_window_size: RollingWindowSize::Size1d,
-        }
-    }
+    pub orderbook: Option<OrderbookStreamConfig>,
+    pub ticker: Option<TickerStreamConfig>,
+    pub window: Option<WindowStreamConfig>,
+    pub agg_trade: Option<AggTradeStreamConfig>,
 }
 
 /// Trading configuration
 #[derive(Debug, Clone, Deserialize)]
 pub struct TradingSettings {
-    pub symbols: HashMap<String, Option<SymbolTradingConfig>>,
-    // Global defaults for when symbol configs don't specify values
-    #[serde(default)]
-    pub defaults: StreamDefaults,
+    market: HashMap<String, TradingPairConfig>,
 }
-/// Resolved orderbook configuration with all defaults applied
+
 #[derive(Debug, Clone)]
-pub struct ResolvedOrderbookConfig {
+pub struct OrderbookStreamSettings {
     pub snapshot_limit: i32,
     pub state_stream_depth: i32,
     pub update_speed: OrderBookUpdateSpeed,
 }
-impl ResolvedOrderbookConfig {
+
+impl OrderbookStreamSettings {
     /// Create a new resolved orderbook config with defaults applied
     #[must_use]
     pub fn new(
@@ -392,32 +319,66 @@ impl ResolvedOrderbookConfig {
     /// Get request weight for a specific limit value
     fn validate_snapshot_limit(limit: i32) -> i32 {
         match limit {
-            1..=100 => 5,
-            101..=500 => 25,
-            501..=1000 => 50,
-            1001..=5000 => 250,
-            _ => 250, // Default to highest weight for safety
+            1..=5000 => limit,
+            _ => 999, // Default to 999 for safety
         }
     }
 
     fn validate_state_stream_depth(depth: i32) -> i32 {
         match depth {
-            1..=100 => depth,
-            101..=500 => 100, // Cap at 100 for performance
-            _ => 50,          // Default to 50 for safety
+            1..=200 => depth,
+            _ => 50, // Default to 50 for safety
         }
     }
 }
-/// Resolved ticker configuration with all defaults applied
-#[derive(Debug, Clone)]
-pub struct ResolvedTickerConfig;
-/// Resolved window configuration with all defaults applied
-#[derive(Debug, Clone)]
-pub struct ResolvedWindowConfig {
+impl Default for OrderbookStreamSettings {
+    fn default() -> Self {
+        Self::new(999, 100, OrderBookUpdateSpeed::default())
+    }
+}
+impl From<OrderbookStreamSettingsRaw> for OrderbookStreamSettings {
+    fn from(
+        OrderbookStreamSettingsRaw {
+            snapshot_limit,
+            state_stream_depth,
+            update_speed,
+        }: OrderbookStreamSettingsRaw,
+    ) -> Self {
+        Self::new(snapshot_limit, state_stream_depth, update_speed)
+    }
+}
+
+impl From<OrderbookStreamConfig> for Option<OrderbookStreamSettings> {
+    fn from(val: OrderbookStreamConfig) -> Self {
+        match val {
+            OrderbookStreamConfig::Config(settings) => Some(settings.into()),
+            OrderbookStreamConfig::Enabled(true) => Some(OrderbookStreamSettings::default()),
+            OrderbookStreamConfig::Enabled(false) => None,
+        }
+    }
+}
+#[derive(Debug, Clone, Default)]
+pub struct TickerStreamSettings;
+impl From<TickerStreamSettingsRaw> for TickerStreamSettings {
+    fn from(_: TickerStreamSettingsRaw) -> Self {
+        Self {}
+    }
+}
+impl From<TickerStreamConfig> for Option<TickerStreamSettings> {
+    fn from(val: TickerStreamConfig) -> Self {
+        match val {
+            TickerStreamConfig::Config(settings) => Some(settings.into()),
+            TickerStreamConfig::Enabled(true) => Some(TickerStreamSettings),
+            TickerStreamConfig::Enabled(false) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WindowStreamSettings {
     pub rolling_window_size: RollingWindowSize,
 }
-impl ResolvedWindowConfig {
-    /// Create a new resolved window config with defaults applied
+impl WindowStreamSettings {
     #[must_use]
     pub fn new(rolling_window_size: RollingWindowSize) -> Self {
         Self {
@@ -425,95 +386,101 @@ impl ResolvedWindowConfig {
         }
     }
 }
-/// Resolved aggregate trade configuration with all defaults applied
-#[derive(Debug, Clone)]
-pub struct ResolvedAggTradeConfig;
-/// Resolved stream configurations with all defaults applied
-#[derive(Debug, Clone)]
-pub struct ResolvedStream {
-    pub orderbook: Option<ResolvedOrderbookConfig>,
-    pub ticker: Option<ResolvedTickerConfig>,
-    pub window: Option<ResolvedWindowConfig>,
-    pub agg_trade: Option<ResolvedAggTradeConfig>,
+
+impl From<WindowStreamSettingsRaw> for WindowStreamSettings {
+    fn from(
+        WindowStreamSettingsRaw {
+            rolling_window_size,
+        }: WindowStreamSettingsRaw,
+    ) -> Self {
+        Self::new(rolling_window_size)
+    }
 }
 
-/// Resolved configuration for a symbol with all defaults applied
+impl From<WindowStreamConfig> for Option<WindowStreamSettings> {
+    fn from(val: WindowStreamConfig) -> Self {
+        match val {
+            WindowStreamConfig::Config(settings) => Some(settings.into()),
+            WindowStreamConfig::Enabled(true) => Some(WindowStreamSettings::default()),
+            WindowStreamConfig::Enabled(false) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AggTradeStreamSettings;
+impl From<AggTradeStreamSettingsRaw> for AggTradeStreamSettings {
+    fn from(_: AggTradeStreamSettingsRaw) -> Self {
+        Self {}
+    }
+}
+
+impl From<AggTradeStreamConfig> for Option<AggTradeStreamSettings> {
+    fn from(val: AggTradeStreamConfig) -> Self {
+        match val {
+            AggTradeStreamConfig::Config(settings) => Some(settings.into()),
+            AggTradeStreamConfig::Enabled(true) => Some(AggTradeStreamSettings),
+            AggTradeStreamConfig::Enabled(false) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
-pub struct ResolvedSymbolConfig {
+pub struct Streams {
+    pub orderbook: Option<OrderbookStreamSettings>,
+    pub ticker: Option<TickerStreamSettings>,
+    pub window: Option<WindowStreamSettings>,
+    pub agg_trade: Option<AggTradeStreamSettings>,
+}
+
+impl Default for Streams {
+    fn default() -> Self {
+        Self {
+            orderbook: Some(OrderbookStreamSettings::default()),
+            ticker: Some(TickerStreamSettings),
+            window: Some(WindowStreamSettings::default()),
+            agg_trade: Some(AggTradeStreamSettings),
+        }
+    }
+}
+
+/// Resolved configuration for a pair with all defaults applied
+#[derive(Debug, Clone)]
+pub struct ResolvedPairConfig {
     pub symbol: String,
-    pub streams: ResolvedStream,
+    pub streams: Streams,
     pub persist: bool,
     pub message_queue: bool,
 }
 
 impl TradingSettings {
-    /// Validate all symbol configurations
+    /// Validate all pairs configurations
     #[must_use]
-    pub fn get_symbol_configs(&self) -> Vec<ResolvedSymbolConfig> {
-        let Self { symbols, defaults } = self;
-        let StreamDefaults {
-            snapshot_limit,
-            state_stream_depth,
-            update_speed,
-            rolling_window_size,
-        } = *defaults;
+    pub fn get_pair_configs(&self) -> Vec<ResolvedPairConfig> {
+        let Self { market } = self;
 
-        symbols
+        market
             .iter()
-            .map(|(symbol_name, config)| {
-                let default_config = SymbolTradingConfig::default();
-                let config = config.as_ref().unwrap_or(&default_config);
-                let symbol_name = symbol_name.trim().to_uppercase();
+            .map(|(pair, config)| {
+                let symbol = pair.trim().to_uppercase();
                 let persist = config.persist;
                 let message_queue = config.message_queue;
-                // is stream none and if not are all the stream configs also none cuz then we use defaults
-                let streams = if config.streams.as_ref().is_none_or(|stream| {
-                    stream.orderbook.is_none()
-                        //&& stream.ticker.is_none()
-                        && stream.window.is_none()
-                    //&& stream.agg_trade.is_none()
-                }) {
-                    ResolvedStream {
-                        orderbook: Some(ResolvedOrderbookConfig::new(
-                            snapshot_limit,
-                            state_stream_depth,
-                            update_speed,
-                        )),
-                        ticker: Some(ResolvedTickerConfig {}),
-                        window: Some(ResolvedWindowConfig::new(rolling_window_size)),
-                        agg_trade: Some(ResolvedAggTradeConfig {}),
-                    }
+                let streams = if config.orderbook.is_none()
+                    && config.ticker.is_none()
+                    && config.window.is_none()
+                    && config.agg_trade.is_none()
+                {
+                    Streams::default()
                 } else {
-                    // create a stream config, using values from the config falling back to defaults if not specified
-                    ResolvedStream {
-                        orderbook: config.streams.as_ref().and_then(|sc| {
-                            sc.orderbook.as_ref().map(|ob| {
-                                ResolvedOrderbookConfig::new(
-                                    ob.snapshot_limit.unwrap_or(snapshot_limit),
-                                    ob.state_stream_depth.unwrap_or(state_stream_depth),
-                                    ob.update_speed.unwrap_or(update_speed),
-                                )
-                            })
-                        }),
-                        ticker: config
-                            .streams
-                            .as_ref()
-                            .and_then(|sc| sc.ticker.as_ref().map(|_| ResolvedTickerConfig {})),
-                        window: config.streams.as_ref().and_then(|sc| {
-                            sc.window.as_ref().map(|w| {
-                                ResolvedWindowConfig::new(
-                                    w.rolling_window_size.unwrap_or(rolling_window_size),
-                                )
-                            })
-                        }),
-                        agg_trade: config.streams.as_ref().and_then(|sc| {
-                            sc.agg_trade.as_ref().map(|_| ResolvedAggTradeConfig {})
-                        }),
+                    Streams {
+                        orderbook: config.orderbook.as_ref().and_then(|ob| ob.clone().into()),
+                        ticker: config.ticker.as_ref().and_then(|t| t.clone().into()),
+                        window: config.window.as_ref().and_then(|w| w.clone().into()),
+                        agg_trade: config.agg_trade.as_ref().and_then(|at| at.clone().into()),
                     }
                 };
-
-                ResolvedSymbolConfig {
-                    symbol: symbol_name,
+                ResolvedPairConfig {
+                    symbol,
                     streams,
                     persist,
                     message_queue,
@@ -541,10 +508,10 @@ pub struct Settings {
 
 impl Settings {
     fn validate(self) -> Result<Self, ConfigError> {
-        // Validate that at least one symbol is configured
-        if self.trading.symbols.is_empty() {
+        // Validate that at least one market pair is configured
+        if self.trading.market.is_empty() {
             return Err(ConfigError::Message(
-                "At least one trading symbol must be configured".to_string(),
+                "At least one trading market must be configured".to_string(),
             ));
         }
 
@@ -570,10 +537,10 @@ impl Settings {
         // Detect the running environment
         let environment: AppEnvironment = Self::app_environment();
 
-        let environment_filename = format!("{}.yaml", environment.as_str());
+        let environment_filename = format!("{}.toml", environment.as_str());
         let settings = Config::builder()
             // Load base configuration
-            .add_source(File::from(configuration_directory.join("base.yaml")))
+            .add_source(File::from(configuration_directory.join("base.toml")))
             // Layer on environment-specific configuration
             .add_source(
                 File::from(configuration_directory.join(environment_filename)).required(false),
@@ -669,10 +636,10 @@ impl Settings {
         println!("Log Level: {}", self.logging.level);
 
         // Trading configuration
-        let resolved_symbols = self.trading.get_symbol_configs();
-        println!("Trading Symbols: {} configured", resolved_symbols.len());
+        let resolved_pairs = self.trading.get_pair_configs();
+        println!("Trading pairs: {} configured", resolved_pairs.len());
 
-        for config in &resolved_symbols {
+        for config in &resolved_pairs {
             println!("   • {} →", config.symbol);
 
             // Stream info
@@ -731,27 +698,6 @@ impl Settings {
             "   • Startup delay: {}s",
             self.binance.startup_delay_seconds
         );
-
-        // Defaults info
-        println!("  Stream Defaults:");
-        println!(
-            "   • Snapshot limit: {} (weight: {})",
-            self.trading.defaults.snapshot_limit,
-            ResolvedOrderbookConfig::validate_snapshot_limit(self.trading.defaults.snapshot_limit)
-        );
-        println!(
-            "   • State stream depth: {}",
-            self.trading.defaults.state_stream_depth
-        );
-        println!(
-            "   • Update speed: {:?}",
-            self.trading.defaults.update_speed
-        );
-        println!(
-            "   • Rolling window: {:?}",
-            self.trading.defaults.rolling_window_size
-        );
-
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     }
 }

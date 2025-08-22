@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use market_making::{
-    producer::{run_multi_symbol_producer, shutdown_global_resources},
+    producer::{run_multi_market_producer, shutdown_global_resources},
     settings::Settings,
     shutdown::{ShutdownCoordinator, setup_signal_handlers},
 };
@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
     setup_signal_handlers(shutdown_coordinator.clone());
 
     // Run the producer with graceful shutdown
-    let producer_result = run_multi_symbol_producer(settings, shutdown_coordinator).await;
+    let producer_result = run_multi_market_producer(settings, shutdown_coordinator).await;
 
     // Shutdown global resources (Iggy client, database pool, etc.)
     shutdown_global_resources().await;

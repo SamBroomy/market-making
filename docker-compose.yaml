@@ -1,7 +1,6 @@
 services:
   iggy:
     image: apache/iggy:latest
-    #image: iggyrs/iggy:latest
     container_name: iggy
     restart: unless-stopped
     environment:
@@ -27,9 +26,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 3
-    profiles: ["infra"]
-
-
 
   iggy-web-ui:
     image: iggyrs/iggy-web-ui:latest
@@ -66,7 +62,6 @@ services:
       timeout: 5s
       retries: 3
     restart: unless-stopped
-    profiles: ["infra"]
 
   # pgadmin:
   #   image: dpage/pgadmin4:latest
@@ -119,8 +114,7 @@ services:
     depends_on:
       timescaledb:
         condition: service_healthy
-      iggy:
-        condition: service_healthy
+
 
 
 
@@ -151,7 +145,6 @@ services:
       - IGGY_PASSWORD=${IGGY_PASSWORD:-Secret123!}
       - IGGY_PORT=3000
 
-      # Application config (trading, binance, features) is read from YAML files
     restart: unless-stopped
 
 

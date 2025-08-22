@@ -23,17 +23,17 @@ use crate::{
         BinanceClient,
         models::{AggregateTrade, TickerData, WindowTickerData},
     },
-    settings::{BinanceSettings, OrderBookUpdateSpeed, ResolvedSymbolConfig, RollingWindowSize},
+    settings::{BinanceSettings, OrderBookUpdateSpeed, ResolvedPairConfig, RollingWindowSize},
     shutdown::ShutdownCoordinator,
     streaming::binance_stream::{DataHandler, DefaultDataHandler, DepthUpdateHandler},
 };
 
-/// Manages all streaming tasks for a symbol
+/// Manages all streaming tasks for a pair
 pub struct StreamManager;
 
 impl StreamManager {
     pub async fn run(
-        resolved_config: ResolvedSymbolConfig,
+        resolved_config: ResolvedPairConfig,
         binance_settings: BinanceSettings,
         iggy_client: &'static IggyClient,
         pool: PgPool,
