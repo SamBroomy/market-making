@@ -11,11 +11,6 @@ use iggy::{
 use serde::Serialize;
 use tracing::{error, info};
 
-pub enum SerializationFormat {
-    Json,
-    Bincode,
-}
-
 /// Reusable message producer for any serializable data
 pub struct MessageProducer {
     producer: IggyProducer,

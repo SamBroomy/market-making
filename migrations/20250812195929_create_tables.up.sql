@@ -175,4 +175,25 @@ WITH (
 
 SELECT add_compression_policy('orderbook_summary', INTERVAL '1d');
 
+
+
+CREATE TABLE trade_summaries (
+    event_time TIMESTAMPTZ NOT NULL,
+    symbol TEXT NOT NULL,
+    buy_volume DECIMAL(20, 8) NOT NULL,
+    sell_volume DECIMAL(20, 8) NOT NULL,
+    trade_count INTEGER NOT NULL,
+    trade_intensity DECIMAL(10, 4) NOT NULL, -- trades/second
+    imbalance DECIMAL(10, 4) NOT NULL,       -- Exponentially weighted
+    volatility DECIMAL(20, 8) NOT NULL       -- Simple variance
+)
+WITH (
+    tsdb.hypertable,
+    tsdb.partition_column = 'event_time',
+    tsdb.segmentby = 'symbol',
+    tsdb.orderby = 'event_time DESC',
+    tsdb.chunk_interval = '1d'
+);
+SELECT add_compression_policy('trade_summaries', INTERVAL '1d');
+
 COMMIT;

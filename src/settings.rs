@@ -258,8 +258,20 @@ struct WindowStreamSettingsRaw {
 }
 
 /// Stream configuration for aggregate trade data
-#[derive(Debug, Clone, Deserialize, Default)]
-struct AggTradeStreamSettingsRaw;
+#[derive(Debug, Clone, Deserialize)]
+struct AggTradeStreamSettingsRaw {
+    pub window_duration_seconds: u64,
+    pub publish_interval_seconds: u64,
+}
+
+impl Default for AggTradeStreamSettingsRaw {
+    fn default() -> Self {
+        Self {
+            window_duration_seconds: 60,
+            publish_interval_seconds: 10,
+        }
+    }
+}
 
 // Now use the macro to generate the enums and impls
 impl_stream_config!(OrderbookStreamConfig, OrderbookStreamSettingsRaw);
@@ -408,18 +420,30 @@ impl From<WindowStreamConfig> for Option<WindowStreamSettings> {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct AggTradeStreamSettings;
+pub struct AggTradeStreamSettings {
+    pub window_duration_seconds: u64,
+    pub publish_interval_seconds: u64,
+}
+
 impl From<AggTradeStreamSettingsRaw> for AggTradeStreamSettings {
-    fn from(_: AggTradeStreamSettingsRaw) -> Self {
-        Self {}
+    fn from(
+        AggTradeStreamSettingsRaw {
+            window_duration_seconds,
+            publish_interval_seconds,
+        }: AggTradeStreamSettingsRaw,
+    ) -> Self {
+        Self {
+            window_duration_seconds,
+            publish_interval_seconds,
+        }
     }
 }
 
 impl From<AggTradeStreamConfig> for Option<AggTradeStreamSettings> {
-    fn from(val: AggTradeStreamConfig) -> Self {
-        match val {
+    fn from(value: AggTradeStreamConfig) -> Self {
+        match value {
             AggTradeStreamConfig::Config(settings) => Some(settings.into()),
-            AggTradeStreamConfig::Enabled(true) => Some(AggTradeStreamSettings),
+            AggTradeStreamConfig::Enabled(true) => Some(AggTradeStreamSettings::default()),
             AggTradeStreamConfig::Enabled(false) => None,
         }
     }
@@ -439,7 +463,7 @@ impl Default for Streams {
             orderbook: Some(OrderbookStreamSettings::default()),
             ticker: Some(TickerStreamSettings),
             window: Some(WindowStreamSettings::default()),
-            agg_trade: Some(AggTradeStreamSettings),
+            agg_trade: Some(AggTradeStreamSettings::default()),
         }
     }
 }
@@ -644,8 +668,7 @@ impl Settings {
 
             // Stream info
             let mut streams = Vec::new();
-            if config.streams.orderbook.is_some() {
-                let ob = config.streams.orderbook.as_ref().unwrap();
+            if let Some(ob) = &config.streams.orderbook {
                 streams.push(format!(
                     "orderbook({}@{:?})",
                     ob.snapshot_limit, ob.update_speed
@@ -654,12 +677,15 @@ impl Settings {
             if config.streams.ticker.is_some() {
                 streams.push("ticker".to_string());
             }
-            if config.streams.window.is_some() {
-                let w = config.streams.window.as_ref().unwrap();
+            if let Some(w) = &config.streams.window {
                 streams.push(format!("window({:?})", w.rolling_window_size));
             }
-            if config.streams.agg_trade.is_some() {
-                streams.push("agg_trade".to_string());
+
+            if let Some(at) = &config.streams.agg_trade {
+                streams.push(format!(
+                    "agg_trade(window={:?}s, publish={:?}s)",
+                    at.window_duration_seconds, at.publish_interval_seconds
+                ));
             }
 
             if streams.is_empty() {

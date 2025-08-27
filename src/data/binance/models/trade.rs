@@ -22,7 +22,7 @@ pub struct TradeEventData {
     #[serde(rename = "m")]
     pub buyer_market_maker: bool,
 }
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct AggregateTrade {
     #[serde(rename = "E", with = "ts_milliseconds")]

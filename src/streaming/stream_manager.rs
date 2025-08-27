@@ -25,7 +25,10 @@ use crate::{
     },
     settings::{BinanceSettings, OrderBookUpdateSpeed, ResolvedPairConfig, RollingWindowSize},
     shutdown::ShutdownCoordinator,
-    streaming::binance_stream::{DataHandler, DefaultDataHandler, DepthUpdateHandler},
+    streaming::binance_stream::{
+        AggTradeHandler, DataHandler, DefaultDataHandler, DepthUpdateHandler,
+    },
+    trades::TradeProcessor,
 };
 
 /// Manages all streaming tasks for a pair
@@ -68,6 +71,9 @@ impl StreamManager {
             let snapshot_task =
                 Self::run_snapshot_task(snapshot_request_rx, bc.clone(), snapshot_shutdown_rx);
             tasks.push(snapshot_task);
+
+            // Make the above optional?
+
             let depth_producer = if resolved_config.message_queue {
                 Some(MessageProducer::new(iggy_client, "diff_book_depth", &symbol, 1).await?)
             } else {
@@ -151,13 +157,54 @@ impl StreamManager {
             tasks.push(window_ticker_task);
         }
 
-        if let Some(agg_trade_config) = resolved_config.streams.agg_trade {
+        if let Some(trade_tracker_config) = resolved_config.streams.agg_trade {
+            // Create channels for TradeProcessor communication
+            let (trade_for_processor_tx, trade_for_processor_rx) = mpsc::unbounded_channel();
+
+            // Create message producer for trade summaries
+            let summary_producer = if resolved_config.message_queue {
+                Some(MessageProducer::new(iggy_client, "trade_summaries", &symbol, 1).await?)
+            } else {
+                None
+            };
+
+            // Create and spawn TradeProcessor
+            let trade_processor = TradeProcessor::new(
+                symbol.clone(),
+                trade_for_processor_rx,
+                chrono::Duration::seconds(trade_tracker_config.window_duration_seconds as i64),
+                Duration::from_secs(trade_tracker_config.publish_interval_seconds),
+                summary_producer,
+                database_writer.clone(),
+            );
+
+            let mut processor_shutdown_rx = shutdown_coordinator.subscribe();
+            let symbol_clone = symbol.clone();
+            let processor_task = tokio::spawn(async move {
+                tokio::select! {
+                    result = trade_processor.run() => {
+                        result
+                    }
+                    _ = processor_shutdown_rx.recv() => {
+                        info!("TradeProcessor received shutdown signal for {}", symbol_clone);
+                        Ok(())
+                    }
+                }
+            });
+            tasks.push(processor_task);
+
+            // Make the above optional?
+
             let agg_trade_producer = if resolved_config.message_queue {
                 Some(MessageProducer::new(iggy_client, "agg_trade", &symbol, 1).await?)
             } else {
                 None
             };
-            let handler = DefaultDataHandler::new(agg_trade_producer, database_writer.clone());
+
+            let handler = AggTradeHandler::new(
+                DefaultDataHandler::new(agg_trade_producer, database_writer.clone()),
+                Some(trade_for_processor_tx),
+            );
             let agg_trade_task = Self::start_agg_trade_stream(symbol.clone(), handler, bc.clone());
             tasks.push(agg_trade_task);
         }
@@ -334,7 +381,7 @@ impl StreamManager {
 
     fn start_agg_trade_stream(
         symbol: String,
-        handler: DefaultDataHandler,
+        handler: AggTradeHandler,
         bc: Arc<BinanceClient>,
     ) -> JoinHandle<Result<()>> {
         let boxed_handler: Box<dyn DataHandler<AggregateTrade>> = Box::new(handler);

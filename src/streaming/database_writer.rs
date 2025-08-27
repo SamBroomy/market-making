@@ -9,6 +9,7 @@ use crate::{
     data::binance::models::{
         AggregateTrade, DepthSnapshot, DepthUpdate, TickerData, WindowTickerData,
     },
+    trades::TradeSummary,
 };
 
 /// Reusable database writer for market data
@@ -224,6 +225,30 @@ impl DatabaseWriter {
         .await
         {
             error!("Failed to insert orderbook summary for {}: {}", symbol, e);
+            return Err(e.into());
+        }
+        Ok(())
+    }
+
+    pub async fn write_trade_summary(&self, summary: &TradeSummary, symbol: &str) -> Result<()> {
+        if let Err(e) = sqlx::query!(
+            r"INSERT INTO trade_summaries (
+                event_time, symbol, buy_volume, sell_volume, trade_count,
+                trade_intensity, imbalance, volatility
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            summary.event_time,
+            symbol,
+            summary.buy_volume,
+            summary.sell_volume,
+            summary.trade_count,
+            summary.trade_intensity,
+            summary.imbalance,
+            summary.volatility,
+        )
+        .execute(&self.pool)
+        .await
+        {
+            error!("Failed to insert trade summary for {}: {}", symbol, e);
             return Err(e.into());
         }
         Ok(())

@@ -12,6 +12,7 @@ use super::{DatabaseWriter, MessageProducer};
 #[async_trait]
 pub trait DataHandler<T>: Send + Sync {
     async fn handle_data(&self, data: &T) -> Result<()>;
+    async fn handle_data_owned(&self, data: T) -> Result<()>;
 }
 
 /// Combines message queue and database writing (both optional)
@@ -66,7 +67,7 @@ where
         while let Some(data) = receiver.recv().await {
             debug!("{} - {}: {:?}", self.stream_name, self.symbol, data);
 
-            if let Err(e) = self.handler.handle_data(&data).await {
+            if let Err(e) = self.handler.handle_data_owned(data).await {
                 error!(
                     "Failed to handle {} data for {}: {}",
                     self.stream_name, self.symbol, e
@@ -87,15 +88,20 @@ macro_rules! impl_data_handler {
             async fn handle_data(&self, data: &$data_type) -> Result<()> {
                 // Send to message queue if enabled
                 if let Some(ref producer) = self.message_producer {
-                    producer.send_json(data).await?;
+                    producer.send_json(&data).await?;
                 }
 
                 // Write to database if enabled
                 if let Some(ref writer) = self.database_writer {
-                    writer.$db_method(data).await?;
+                    writer.$db_method(&data).await?;
                 }
 
                 Ok(())
+            }
+
+            #[inline]
+            async fn handle_data_owned(&self, data: $data_type) -> Result<()> {
+                self.handle_data(&data).await
             }
         }
     };
@@ -129,17 +135,61 @@ impl DepthUpdateHandler {
 }
 #[async_trait]
 impl DataHandler<DepthUpdate> for DepthUpdateHandler {
-    async fn handle_data(&self, data: &DepthUpdate) -> Result<()> {
+    async fn handle_data_owned(&self, data: DepthUpdate) -> Result<()> {
         // Handle default processing (message queue + database)
-        self.default_handler.handle_data(data).await?;
+        self.default_handler.handle_data(&data).await?;
+
+        let symbol = data.symbol.clone();
 
         // Forward to orderbook if configured
         if let Some(sender) = &self.orderbook_sender
-            && sender.send(data.clone()).is_err()
+            && sender.send(data).is_err()
         {
-            warn!("Order book receiver for {} is closed", data.symbol);
+            warn!("Order book receiver for {} is closed", symbol);
         }
 
         Ok(())
+    }
+
+    async fn handle_data(&self, data: &DepthUpdate) -> Result<()> {
+        unreachable!("DepthUpdateHandler requires owned data");
+    }
+}
+
+// Handler for AggTrade events that forwards to TradeProcessor
+pub struct AggTradeHandler {
+    default_handler: DefaultDataHandler,
+    trade_processor_sender: Option<mpsc::UnboundedSender<AggregateTrade>>,
+}
+impl AggTradeHandler {
+    #[must_use]
+    pub fn new(
+        default_handler: DefaultDataHandler,
+        trade_processor_sender: Option<mpsc::UnboundedSender<AggregateTrade>>,
+    ) -> Self {
+        Self {
+            default_handler,
+            trade_processor_sender,
+        }
+    }
+}
+#[async_trait]
+impl DataHandler<AggregateTrade> for AggTradeHandler {
+    async fn handle_data_owned(&self, data: AggregateTrade) -> Result<()> {
+        self.default_handler.handle_data(&data).await?;
+
+        let symbol = data.symbol.clone();
+
+        if let Some(sender) = &self.trade_processor_sender
+            && sender.send(data).is_err()
+        {
+            warn!("TradeProcessor receiver for {} is closed", symbol);
+        }
+
+        Ok(())
+    }
+
+    async fn handle_data(&self, data: &AggregateTrade) -> Result<()> {
+        unreachable!("AggTradeHandler requires owned data");
     }
 }
