@@ -150,7 +150,7 @@ pub async fn run_multi_market_producer(
 
         // stagger startup to avoid overwhelming services with configurable delay
         if index > 0 {
-            let delay = binance_settings.get_startup_delay();
+            let delay = binance_settings.startup_delay;
             info!(
                 "Waiting {}s before starting producer for {} (rate limiting)",
                 delay.as_secs(),

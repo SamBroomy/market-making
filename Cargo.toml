@@ -83,6 +83,7 @@ config = { version = "0.15.14", features = ["toml"] }
 secrecy = { version = "0.10", features = ["serde"] }
 serde-aux = "4.7"
 serde_with = "3.14"
+humantime-serde = "1.1.1"
 # reqwest-middleware = "0.4"
 # reqwest-retry = "0.7"
 
@@ -109,6 +110,7 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
 unreadable_literal = "allow"
+too_many_arguments = "allow"
 
 #must_use_candidate = "allow" # --fix fixes this
 return_self_not_must_use = "allow" # --fix does not fix this

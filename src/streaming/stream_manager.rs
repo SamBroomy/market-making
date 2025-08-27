@@ -18,7 +18,7 @@ use tracing::{debug, error, info, warn};
 
 use super::{BinanceStream, DatabaseWriter, MessageProducer};
 use crate::{
-    book::order_book::{OrderBook, SnapshotRequest},
+    book::order_book_processor::{OrderBookProcessor, SnapshotRequest},
     data::binance::{
         BinanceClient,
         models::{AggregateTrade, TickerData, WindowTickerData},
@@ -92,7 +92,7 @@ impl StreamManager {
                 orderbook_config.update_speed,
             );
             tasks.push(depth_task);
-            let orderbook = OrderBook::new(
+            let orderbook = OrderBookProcessor::new(
                 symbol.clone(),
                 Some(orderbook_config.snapshot_limit),
                 depth_for_orderbook_rx,
@@ -100,6 +100,7 @@ impl StreamManager {
                 signals_producer,
                 state_producer,
                 database_writer.clone(),
+                orderbook_config.publish_interval,
             )
             .await?;
 
@@ -157,13 +158,24 @@ impl StreamManager {
             tasks.push(window_ticker_task);
         }
 
-        if let Some(trade_tracker_config) = resolved_config.streams.agg_trade {
+        if let Some(agg_trade_config) = resolved_config.streams.agg_trade {
             // Create channels for TradeProcessor communication
             let (trade_for_processor_tx, trade_for_processor_rx) = mpsc::unbounded_channel();
 
             // Create message producer for trade summaries
             let summary_producer = if resolved_config.message_queue {
-                Some(MessageProducer::new(iggy_client, "trade_summaries", &symbol, 1).await?)
+                Some(
+                    MessageProducer::new(
+                        iggy_client,
+                        &format!(
+                            "agg_trade_summary_{}s",
+                            agg_trade_config.window_duration.as_secs()
+                        ),
+                        &symbol,
+                        1,
+                    )
+                    .await?,
+                )
             } else {
                 None
             };
@@ -172,8 +184,8 @@ impl StreamManager {
             let trade_processor = TradeProcessor::new(
                 symbol.clone(),
                 trade_for_processor_rx,
-                chrono::Duration::seconds(trade_tracker_config.window_duration_seconds as i64),
-                Duration::from_secs(trade_tracker_config.publish_interval_seconds),
+                agg_trade_config.window_duration,
+                agg_trade_config.publish_interval,
                 summary_producer,
                 database_writer.clone(),
             );

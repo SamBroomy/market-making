@@ -13,12 +13,12 @@ message_queue = true
 orderbook = { snapshot_limit = 999, state_stream_depth = 50, update_speed = "1000ms" }
 ticker = true
 window = { rolling_window_size = "1h" }
-agg_trade = true
+agg_trade = { window_duration = "1m" }
 
 [trading.market.ETHUSDT]
 persist = true
 message_queue = true
-orderbook = { snapshot_limit = 999, state_stream_depth = 50, update_speed = "100ms" }
+orderbook = { snapshot_limit = 999, state_stream_depth = 50, update_speed = "100ms", publish_interval = "5s" }
 ticker = true
 window = { rolling_window_size = "1h" }
 agg_trade = true

@@ -1,12 +1,11 @@
 use core::fmt;
-use std::{collections::HashMap, sync::OnceLock};
+use std::{collections::HashMap, sync::OnceLock, time::Duration};
 
 use binance_sdk::spot::websocket_streams::RollingWindowTickerWindowSizeEnum;
 use config::{Config, ConfigError, Environment, File};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde_aux::field_attributes::deserialize_number_from_string;
-
 /// Environment for the application
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppEnvironment {
@@ -107,17 +106,22 @@ impl IggySettings {
     }
 }
 
+fn startup_delay_default() -> Duration {
+    Duration::from_secs(5)
+}
+
 /// Binance API settings
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct BinanceSettings {
     pub use_testnet: bool,
-    startup_delay_seconds: u64,
+    #[serde(with = "humantime_serde", default = "startup_delay_default")]
+    pub startup_delay: Duration,
 }
 impl Default for BinanceSettings {
     fn default() -> Self {
         Self {
             use_testnet: false,
-            startup_delay_seconds: 5,
+            startup_delay: startup_delay_default(),
         }
     }
 }
@@ -141,11 +145,6 @@ impl BinanceSettings {
         } else {
             binance_sdk::constants::SPOT_WS_STREAMS_PROD_URL.to_string()
         }
-    }
-
-    #[must_use]
-    pub fn get_startup_delay(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.startup_delay_seconds)
     }
 }
 
@@ -194,6 +193,9 @@ struct OrderbookStreamSettingsRaw {
     pub snapshot_limit: i32,
     pub state_stream_depth: i32,
     pub update_speed: OrderBookUpdateSpeed,
+    /// Interval at which to publish orderbook snapshots (e.g., every 100ms) if none then every update received is published
+    #[serde(with = "humantime_serde", default)]
+    pub publish_interval: Option<Duration>,
 }
 
 impl Default for OrderbookStreamSettingsRaw {
@@ -202,6 +204,7 @@ impl Default for OrderbookStreamSettingsRaw {
             snapshot_limit: 999,
             state_stream_depth: 100,
             update_speed: OrderBookUpdateSpeed::default(),
+            publish_interval: None,
         }
     }
 }
@@ -260,15 +263,19 @@ struct WindowStreamSettingsRaw {
 /// Stream configuration for aggregate trade data
 #[derive(Debug, Clone, Deserialize)]
 struct AggTradeStreamSettingsRaw {
-    pub window_duration_seconds: u64,
-    pub publish_interval_seconds: u64,
+    /// Duration of the rolling window for aggregating trades (e.g., 1 minute)
+    #[serde(with = "humantime_serde")]
+    pub window_duration: Duration,
+    /// Interval at which to publish aggregated trade data (e.g., every 10 seconds) if none then every aggregated trade received a summary is published
+    #[serde(with = "humantime_serde", default)]
+    pub publish_interval: Option<Duration>,
 }
 
 impl Default for AggTradeStreamSettingsRaw {
     fn default() -> Self {
         Self {
-            window_duration_seconds: 60,
-            publish_interval_seconds: 10,
+            window_duration: Duration::from_secs(60),
+            publish_interval: None,
         }
     }
 }
@@ -309,6 +316,7 @@ pub struct OrderbookStreamSettings {
     pub snapshot_limit: i32,
     pub state_stream_depth: i32,
     pub update_speed: OrderBookUpdateSpeed,
+    pub publish_interval: Option<Duration>,
 }
 
 impl OrderbookStreamSettings {
@@ -318,6 +326,7 @@ impl OrderbookStreamSettings {
         snapshot_limit: i32,
         state_stream_depth: i32,
         update_speed: OrderBookUpdateSpeed,
+        publish_interval: Option<Duration>,
     ) -> Self {
         let snapshot_limit = Self::validate_snapshot_limit(snapshot_limit);
         let state_stream_depth = Self::validate_state_stream_depth(state_stream_depth);
@@ -325,6 +334,7 @@ impl OrderbookStreamSettings {
             snapshot_limit,
             state_stream_depth,
             update_speed,
+            publish_interval,
         }
     }
 
@@ -345,7 +355,7 @@ impl OrderbookStreamSettings {
 }
 impl Default for OrderbookStreamSettings {
     fn default() -> Self {
-        Self::new(999, 100, OrderBookUpdateSpeed::default())
+        Self::new(999, 100, OrderBookUpdateSpeed::default(), None)
     }
 }
 impl From<OrderbookStreamSettingsRaw> for OrderbookStreamSettings {
@@ -354,9 +364,15 @@ impl From<OrderbookStreamSettingsRaw> for OrderbookStreamSettings {
             snapshot_limit,
             state_stream_depth,
             update_speed,
+            publish_interval,
         }: OrderbookStreamSettingsRaw,
     ) -> Self {
-        Self::new(snapshot_limit, state_stream_depth, update_speed)
+        Self::new(
+            snapshot_limit,
+            state_stream_depth,
+            update_speed,
+            publish_interval,
+        )
     }
 }
 
@@ -419,22 +435,31 @@ impl From<WindowStreamConfig> for Option<WindowStreamSettings> {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AggTradeStreamSettings {
-    pub window_duration_seconds: u64,
-    pub publish_interval_seconds: u64,
+    pub window_duration: Duration,
+    pub publish_interval: Option<Duration>,
+}
+
+impl Default for AggTradeStreamSettings {
+    fn default() -> Self {
+        Self {
+            window_duration: Duration::from_secs(60),
+            publish_interval: None,
+        }
+    }
 }
 
 impl From<AggTradeStreamSettingsRaw> for AggTradeStreamSettings {
     fn from(
         AggTradeStreamSettingsRaw {
-            window_duration_seconds,
-            publish_interval_seconds,
+            window_duration,
+            publish_interval,
         }: AggTradeStreamSettingsRaw,
     ) -> Self {
         Self {
-            window_duration_seconds,
-            publish_interval_seconds,
+            window_duration,
+            publish_interval,
         }
     }
 }
@@ -684,7 +709,7 @@ impl Settings {
             if let Some(at) = &config.streams.agg_trade {
                 streams.push(format!(
                     "agg_trade(window={:?}s, publish={:?}s)",
-                    at.window_duration_seconds, at.publish_interval_seconds
+                    at.window_duration, at.publish_interval
                 ));
             }
 
@@ -720,10 +745,7 @@ impl Settings {
         println!("  Binance API: {api_env}");
         println!("   • REST: {}", self.binance.get_rest_url());
         println!("   • WebSocket: {}", self.binance.get_ws_url());
-        println!(
-            "   • Startup delay: {}s",
-            self.binance.startup_delay_seconds
-        );
+        println!("   • Startup delay: {:?}s", self.binance.startup_delay);
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     }
 }

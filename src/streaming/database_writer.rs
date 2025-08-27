@@ -5,7 +5,7 @@ use sqlx::PgPool;
 use tracing::{error, info};
 
 use crate::{
-    book::book_state::{MarketDataSummary, StateSnapshot},
+    book::order_book::{MarketDataSummary, StateSnapshot},
     data::binance::models::{
         AggregateTrade, DepthSnapshot, DepthUpdate, TickerData, WindowTickerData,
     },

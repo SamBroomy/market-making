@@ -13,7 +13,7 @@ up:
 
 infra-up:
     @echo "🚀 Starting infrastructure services..."
-    docker compose --profile infra up -d
+    docker compose up -d timescaledb iggy iggy-web-ui grafana
 
 local: infra-up
     cargo run --bin producer
