@@ -1,5 +1,6 @@
 pub mod book;
 pub mod data;
+pub mod market_maker;
 pub mod producer;
 pub mod recent_trades;
 pub mod settings;
