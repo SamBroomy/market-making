@@ -1,0 +1,27 @@
+[package]
+name = "domain"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+description = "Domain models and business logic for market making"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+bincode = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+rust_decimal = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+either = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+secrecy = { workspace = true }
+config = { workspace = true }
+humantime-serde = { workspace = true }
+[lints]
+workspace = true

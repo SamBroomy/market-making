@@ -1,0 +1,36 @@
+[package]
+name = "infrastructure"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+description = "Infrastructure layer for market making system"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+bincode = { workspace = true }
+sqlx = { workspace = true }
+rust_decimal = { workspace = true }
+chrono = { workspace = true }
+bytes = { workspace = true }
+iggy = { workspace = true }
+domain = { workspace = true }
+binance-sdk = { workspace = true }
+reqwest = { workspace = true }
+secrecy = { workspace = true }
+serde-aux = { workspace = true }
+humantime-serde = { workspace = true }
+is-docker = { workspace = true }
+
+
+[lints]
+workspace = true

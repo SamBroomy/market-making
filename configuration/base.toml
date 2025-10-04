@@ -1,5 +1,6 @@
 
-[binance]
+[exchange]
+name = "binance"
 use_testnet = true
 startup_delay_seconds = 5
 

@@ -44,17 +44,17 @@ logs service:
 # Run producer locally with development configuration
 producer-local:
     @echo "🏠 Running producer locally with development environment..."
-    MARKET_ENVIRONMENT=development cargo run --bin producer
+    MARKET_ENVIRONMENT=development cargo run --bin market-data-engine
 
 # Run producer locally with local configuration (testnet, debug logging)
 producer-local-testnet:
     @echo "🏠 Running producer locally with local testnet configuration..."
-    MARKET_ENVIRONMENT=local cargo run --bin producer
+    MARKET_ENVIRONMENT=local cargo run --bin market-data-engine
 
 # Run producer locally with production config (for testing)
 producer-local-prod:
     @echo "🏠 Running producer locally with production configuration..."
-    MARKET_ENVIRONMENT=production cargo run --bin producer
+    MARKET_ENVIRONMENT=production cargo run --bin market-data-engine
 
 # Build and run producer in Docker
 producer-docker:
